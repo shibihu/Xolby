@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import random
@@ -62,7 +63,7 @@ async def _fetch_json_with_retry(session, url, params, max_attempts=3):
             ) as response:
                 response.raise_for_status()
                 return await response.json()
-        except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
+        except (asyncio.TimeoutError, aiohttp.ClientError, json.JSONDecodeError, ValueError) as exc:
             log.warning(
                 "[Roblox API] Request to %s (attempt %d/%d) failed: %s: %s",
                 url, attempt, max_attempts, type(exc).__name__, exc
@@ -92,8 +93,8 @@ async def _get_game_details(session, universe_ids):
         return []
 
     details = []
-    for start in range(0, len(universe_ids), 10):
-        chunk = universe_ids[start:start + 10]
+    for start in range(0, len(universe_ids), 100):
+        chunk = universe_ids[start:start + 100]
         try:
             payload = await _fetch_json_with_retry(
                 session,
