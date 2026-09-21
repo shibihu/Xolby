@@ -1,9 +1,12 @@
+import asyncio
+import logging
+import os
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
-import logging
-import os
+
 from services.roblox import get_top_games
 
 load_dotenv()
@@ -20,6 +23,7 @@ if not TOKEN:
 
 intents = discord.Intents.default()
 
+
 class PopularGamesBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
@@ -33,20 +37,41 @@ class PopularGamesBot(commands.Bot):
             log.exception("Failed to load commands.scan; /populargames is unaffected")
         await self.tree.sync()
 
+
 bot = PopularGamesBot()
+
 
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+
 
 @bot.tree.command(name="populargames", description="Show the current Roblox Top 20 games by active players.")
 async def populargames(interaction: discord.Interaction):
     await interaction.response.defer(thinking=True)
     try:
         games = await get_top_games(limit=20)
-    except Exception as e:
+    except asyncio.TimeoutError:
+        log.error("Roblox API request timed out during /populargames execution.")
         await interaction.followup.send(
-            f"❌ Could not fetch Roblox game data.\n`{type(e).__name__}: {e}`"
+            "❌ Could not fetch Roblox game data.\n"
+            "Reason: Roblox API request timed out.\n"
+            "The request was retried automatically."
+        )
+        return
+    except aiohttp.ClientError as e:
+        log.error("Roblox API HTTP error: %s: %s", type(e).__name__, e)
+        await interaction.followup.send(
+            "❌ Could not fetch Roblox game data.\n"
+            "Reason: Roblox API connection error.\n"
+            "The request was retried automatically."
+        )
+        return
+    except Exception as e:
+        log.exception("Unexpected error in /populargames")
+        await interaction.followup.send(
+            "❌ Could not fetch Roblox game data.\n"
+            f"Reason: Unexpected error ({type(e).__name__})."
         )
         return
 
@@ -70,5 +95,6 @@ async def populargames(interaction: discord.Interaction):
     embed.description += "\n\n" + "\n\n".join(lines)
     embed.set_footer(text="Roblox Popular Games • fetched just now")
     await interaction.followup.send(embed=embed)
+
 
 bot.run(TOKEN)

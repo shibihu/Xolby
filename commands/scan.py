@@ -22,6 +22,7 @@ from discord.ext import commands
 
 from services import reporter
 from services.gemini import (
+    DEFAULT_FALLBACK_MODEL,
     DEFAULT_MAX_BYTES_PER_CHUNK,
     DEFAULT_MAX_CHUNKS,
     DEFAULT_MODEL,
@@ -54,6 +55,7 @@ class ScanConfig:
     report_channel_id: int
     api_key: str
     model: str
+    fallback_model: str
     max_files: int
     max_file_bytes: int
     max_total_bytes: int
@@ -124,6 +126,7 @@ def load_config() -> ScanConfig:
         report_channel_id=int(channel_raw),
         api_key=api_key,
         model=(os.getenv("GEMINI_MODEL") or "").strip() or DEFAULT_MODEL,
+        fallback_model=(os.getenv("GEMINI_FALLBACK_MODEL") or "").strip() or DEFAULT_FALLBACK_MODEL,
         max_files=_env_int("SCAN_MAX_FILES", DEFAULT_MAX_FILES),
         max_file_bytes=_env_int("SCAN_MAX_FILE_BYTES", DEFAULT_MAX_FILE_BYTES),
         max_total_bytes=_env_int("SCAN_MAX_TOTAL_BYTES", DEFAULT_MAX_TOTAL_BYTES),
@@ -194,6 +197,7 @@ class ScanCog(commands.Cog):
             analyzer = GeminiAnalyzer(
                 config.api_key,
                 config.model,
+                fallback_model=config.fallback_model,
                 timeout_seconds=config.timeout_seconds,
                 max_chunks=config.max_chunks,
                 max_bytes_per_chunk=config.max_bytes_per_chunk,

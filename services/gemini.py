@@ -1,7 +1,6 @@
 """Gemini-backed static analysis for the ``/scan`` command.
 
-Uses the modern ``google-genai`` SDK (``from google import genai``), not the
-deprecated ``google-generativeai`` package.
+Uses direct Gemini REST API calls over ``aiohttp`` (no ``google-genai`` SDK).
 
 The analyzer never executes or modifies the scanned code: it only sends
 sanitized text to Gemini and parses structured JSON back.
@@ -12,25 +11,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import re
 from dataclasses import dataclass, field
 from typing import Sequence
 
+import aiohttp
+
 from services.scanner import ScannedFile
-
-try:  # Import defensively so a missing dependency never breaks bot startup.
-    from google import genai
-    from google.genai import types as genai_types
-
-    _SDK_IMPORT_ERROR: Exception | None = None
-except Exception as exc:  # pragma: no cover - depends on install state
-    genai = None  # type: ignore[assignment]
-    genai_types = None  # type: ignore[assignment]
-    _SDK_IMPORT_ERROR = exc
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gemini-3.8-flash"
+DEFAULT_MODEL = "gemini-3.5-flash"
+DEFAULT_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_TIMEOUT_SECONDS = 180.0
 DEFAULT_MAX_CHUNKS = 8
 DEFAULT_MAX_BYTES_PER_CHUNK = 180_000
@@ -40,8 +33,8 @@ MAX_FINDINGS_TOTAL = 50
 VALID_SEVERITIES: tuple[str, ...] = ("CRITICAL", "WARNING", "INFO")
 SEVERITY_ORDER = {"CRITICAL": 0, "WARNING": 1, "INFO": 2}
 
-# Keep this instruction exactly as specified: it defines the contract with the
-# model and is what keeps the output trustworthy and parseable.
+TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+
 SYSTEM_INSTRUCTION = """You are a careful software diagnostics assistant.
 Analyze ONLY the source code and files provided to you.
 Find:
@@ -181,12 +174,7 @@ def _clean_file(value: object) -> str | None:
 
 
 def parse_analysis_payload(payload: object) -> tuple[str, list[Finding]]:
-    """Validate a decoded Gemini payload.
-
-    Accepts ``{"summary": ..., "findings": [...]}`` and, defensively, a bare
-    list of findings. Unknown severities are downgraded to ``INFO`` rather than
-    discarding the finding, and malformed entries are dropped.
-    """
+    """Validate a decoded Gemini payload."""
     if isinstance(payload, list):
         raw_findings = payload
         summary: object = ""
@@ -281,12 +269,6 @@ def chunk_files(
     max_bytes_per_chunk: int = DEFAULT_MAX_BYTES_PER_CHUNK,
     max_chunks: int = DEFAULT_MAX_CHUNKS,
 ) -> tuple[list[list[ScannedFile]], int]:
-    """Greedily pack files into Gemini requests.
-
-    Returns ``(chunks, omitted_file_count)``. Files are never split; when the
-    chunk budget runs out the leftovers are simply not analyzed, so a large
-    project degrades gracefully instead of failing.
-    """
     chunks: list[list[ScannedFile]] = []
     current: list[ScannedFile] = []
     current_size = 0
@@ -315,14 +297,13 @@ def chunk_files(
     if current:
         if len(chunks) < max_chunks:
             chunks.append(current)
-        else:  # pragma: no cover - defensive
+        else:
             omitted += len(current)
 
     return chunks, omitted
 
 
 def build_chunk_prompt(chunk: Sequence[ScannedFile], index: int, total: int) -> str:
-    """Render one Gemini request body for a chunk of sanitized files."""
     parts = [
         f"Analyze part {index} of {total} of a project snapshot.",
         "Each file below is delimited by '=== FILE: <path> ===' and "
@@ -352,7 +333,6 @@ def build_chunk_prompt(chunk: Sequence[ScannedFile], index: int, total: int) -> 
 
 
 def combine_summaries(summaries: Sequence[str]) -> str:
-    """Merge per-chunk summaries into one report summary."""
     cleaned = [summary.strip() for summary in summaries if summary.strip()]
     if not cleaned:
         return "Gemini did not return a summary."
@@ -371,12 +351,13 @@ def combine_summaries(summaries: Sequence[str]) -> str:
 # Analyzer
 # ---------------------------------------------------------------------------
 class GeminiAnalyzer:
-    """Thin async wrapper around the google-genai client."""
+    """Async wrapper using aiohttp to interact directly with the Gemini REST API."""
 
     def __init__(
         self,
         api_key: str,
         model: str = DEFAULT_MODEL,
+        fallback_model: str | None = DEFAULT_FALLBACK_MODEL,
         *,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         max_chunks: int = DEFAULT_MAX_CHUNKS,
@@ -386,75 +367,119 @@ class GeminiAnalyzer:
             raise GeminiError(
                 "GEMINI_API_KEY is missing. Add it to .env to use /scan."
             )
-        if _SDK_IMPORT_ERROR is not None or genai is None:
-            raise GeminiError(
-                "google-genai is not installed or could not be imported "
-                f"({_SDK_IMPORT_ERROR}). Run: pip install -r requirements.txt"
-            )
 
+        self.api_key = api_key.strip()
         self.model = (model or DEFAULT_MODEL).strip()
+        self.fallback_model = (
+            fallback_model.strip() if fallback_model and fallback_model.strip() else None
+        )
         self.timeout_seconds = timeout_seconds
         self.max_chunks = max_chunks
         self.max_bytes_per_chunk = max_bytes_per_chunk
+        self._session: aiohttp.ClientSession | None = None
 
-        try:
-            self._client = genai.Client(api_key=api_key.strip())
-        except Exception as exc:  # pragma: no cover - depends on SDK state
-            raise GeminiError(f"Could not create the Gemini client: {exc}") from exc
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                headers={"x-goog-api-key": self.api_key}
+            )
+        return self._session
 
     async def aclose(self) -> None:
-        """Release the underlying HTTP resources if the SDK exposes them."""
-        closer = getattr(self._client, "aio", None)
-        closer = getattr(closer, "aclose", None)
-        if closer is None:
-            return
-        try:
-            await closer()
-        except Exception:  # pragma: no cover - best effort cleanup
-            log.debug("Ignoring error while closing the Gemini client", exc_info=True)
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+
+    async def _call_gemini_api(self, model: str, prompt: str) -> str:
+        """Call Gemini REST API for a specific model with retry backoff."""
+        session = await self._get_session()
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+        payload = {
+            "systemInstruction": {
+                "parts": [{"text": SYSTEM_INSTRUCTION}]
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": prompt}]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.1,
+                "responseMimeType": "application/json"
+            }
+        }
+
+        max_attempts = 3
+        backoffs = [2.0, 4.0, 8.0]
+
+        for attempt in range(1, max_attempts + 1):
+            timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+            try:
+                async with session.post(url, json=payload, timeout=timeout) as response:
+                    status = response.status
+                    if status == 200:
+                        data = await response.json()
+                        try:
+                            candidates = data.get("candidates", [])
+                            if candidates:
+                                parts = candidates[0].get("content", {}).get("parts", [])
+                                text_parts = [p.get("text", "") for p in parts if "text" in p]
+                                text = "".join(text_parts)
+                                if text.strip():
+                                    return text
+                        except Exception as exc:
+                            raise GeminiError(f"Failed to parse response structure: {exc}") from exc
+                        raise GeminiError("Gemini returned response without text content")
+
+                    body_text = await response.text()
+                    if status in TRANSIENT_STATUS_CODES:
+                        log.warning(
+                            "[Gemini] Model %s attempt %d/%d failed: HTTP %d",
+                            model, attempt, max_attempts, status
+                        )
+                    else:
+                        # Non-transient error (e.g. 400 Bad Request, 401/403 Auth error)
+                        log.error("[Gemini] Model %s returned HTTP %d: %s", model, status, body_text)
+                        raise GeminiError(f"Gemini API error (HTTP {status}): {body_text[:200]}")
+
+            except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
+                log.warning(
+                    "[Gemini] Model %s attempt %d/%d network error: %s: %s",
+                    model, attempt, max_attempts, type(exc).__name__, exc
+                )
+
+            if attempt < max_attempts:
+                base_delay = backoffs[attempt - 1]
+                jitter = random.uniform(0.0, 1.0)
+                delay = base_delay + jitter
+                await asyncio.sleep(delay)
+
+        raise GeminiError(f"Model {model} failed after {max_attempts} attempts due to transient errors")
 
     async def _generate_json(self, prompt: str) -> tuple[str, list[Finding]]:
-        """Send one prompt to Gemini and validate the JSON answer."""
-        config = genai_types.GenerateContentConfig(
-            system_instruction=SYSTEM_INSTRUCTION,
-            temperature=0.1,
-            response_mime_type="application/json",
-        )
-
+        """Attempt primary model and fallback model if needed."""
         try:
-            response = await asyncio.wait_for(
-                self._client.aio.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config=config,
-                ),
-                timeout=self.timeout_seconds,
-            )
-        except asyncio.TimeoutError as exc:
-            raise GeminiError(
-                f"Gemini timed out after {self.timeout_seconds:.0f}s"
-            ) from exc
-        except Exception as exc:
-            raise GeminiError(f"Gemini request failed: {type(exc).__name__}: {exc}") from exc
+            raw_text = await self._call_gemini_api(self.model, prompt)
+        except GeminiError as primary_err:
+            if self.fallback_model and self.fallback_model != self.model:
+                log.warning(
+                    "[Gemini] Primary model %s failed (%s). Falling back to %s",
+                    self.model, primary_err, self.fallback_model
+                )
+                try:
+                    raw_text = await self._call_gemini_api(self.fallback_model, prompt)
+                except GeminiError as fallback_err:
+                    raise GeminiError(
+                        f"Both primary ({self.model}) and fallback ({self.fallback_model}) models failed. "
+                        f"Primary: {primary_err}; Fallback: {fallback_err}"
+                    ) from fallback_err
+            else:
+                raise primary_err
 
-        text = getattr(response, "text", None)
-        if not text and getattr(response, "candidates", None):
-            try:  # Defensive fallback for SDK shape changes.
-                text = response.candidates[0].content.parts[0].text
-            except Exception:
-                text = None
-
-        if not text or not text.strip():
-            raise GeminiError("Gemini returned an empty response")
-
-        return parse_analysis_payload(_extract_json(text))
+        return parse_analysis_payload(_extract_json(raw_text))
 
     async def analyze(self, files: Sequence[ScannedFile]) -> AnalysisResult:
-        """Analyze sanitized files, chunking large projects into parts.
-
-        Chunks are analyzed sequentially to stay friendly to API rate limits,
-        and a failing chunk never aborts the whole report.
-        """
         result = AnalysisResult()
 
         if not files:
@@ -469,7 +494,7 @@ class GeminiAnalyzer:
         result.omitted_files = omitted
 
         log.info(
-            "Sending project analysis to Gemini (%d chunk(s), model=%s)",
+            "Sending project analysis to Gemini (%d chunk(s), primary model=%s)",
             len(chunks),
             self.model,
         )
