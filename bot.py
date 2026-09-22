@@ -39,34 +39,50 @@ class PopularGamesBot(commands.Bot):
             "commands.utility",
         ]
 
+        print("[EXTENSIONS] Loading extensions...")
+        log.info("[EXTENSIONS] Loading extensions...")
+
         for ext in extensions:
             try:
                 await self.load_extension(ext)
-                print(f"[EXTENSION] Loaded {ext}")
-                log.info("[EXTENSION] Loaded %s", ext)
+                print(f"[EXTENSION] Successfully loaded {ext}")
+                log.info("[EXTENSION] Successfully loaded %s", ext)
             except Exception as exc:
                 print(f"[ERROR] Failed to load {ext}:", file=sys.stderr)
                 traceback.print_exc()
                 log.exception("[ERROR] Failed to load %s", ext)
+                raise RuntimeError(f"Failed to load extension {ext}: {exc}") from exc
+
+        # Inspect command tree recursively
+        registered_cmds = sorted([cmd.name for cmd in self.tree.get_commands()])
+        total_cmds = len(registered_cmds)
+        print(f"[COMMANDS] Registered application commands ({total_cmds} total):")
+        log.info("[COMMANDS] Registered application commands (%d total):", total_cmds)
+        for cmd_name in registered_cmds:
+            print(f"- /{cmd_name}")
+            log.info("- /%s", cmd_name)
+
+        EXPECTED_MIN_COMMANDS = 25
+        if total_cmds < EXPECTED_MIN_COMMANDS:
+            error_msg = (
+                f"[ERROR] Unexpectedly low command count ({total_cmds} registered, "
+                f"expected at least {EXPECTED_MIN_COMMANDS}). "
+                f"Currently registered commands: {registered_cmds}"
+            )
+            print(error_msg, file=sys.stderr)
+            log.error(error_msg)
 
         dev_guild_id = (os.getenv("DEV_GUILD_ID") or "").strip()
         if dev_guild_id and dev_guild_id.isdigit():
             guild_object = discord.Object(id=int(dev_guild_id))
             self.tree.copy_global_to(guild=guild_object)
             synced = await self.tree.sync(guild=guild_object)
-            print(f"[SYNC] Synced {len(synced)} command(s) to DEV_GUILD_ID={dev_guild_id}")
-            log.info("[SYNC] Synced %d command(s) to DEV_GUILD_ID=%s", len(synced), dev_guild_id)
+            print(f"[SYNC] DEV_GUILD_ID={dev_guild_id}: Synced {len(synced)} command(s) to development guild")
+            log.info("[SYNC] DEV_GUILD_ID=%s: Synced %d command(s) to development guild", dev_guild_id, len(synced))
         else:
             synced = await self.tree.sync()
-            print(f"[SYNC] Synced {len(synced)} command(s) globally")
-            log.info("[SYNC] Synced %d command(s) globally", len(synced))
-
-        registered_commands = sorted([cmd.name for cmd in self.tree.get_commands()])
-        print(f"[COMMANDS] Loaded {len(registered_commands)} application commands:")
-        log.info("[COMMANDS] Loaded %d application commands:", len(registered_commands))
-        for cmd_name in registered_commands:
-            print(f"- {cmd_name}")
-            log.info("- %s", cmd_name)
+            print(f"[SYNC] GLOBAL: Synced {len(synced)} command(s) globally")
+            log.info("[SYNC] GLOBAL: Synced %d command(s) globally", len(synced))
 
 
 bot = PopularGamesBot()
