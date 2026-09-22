@@ -172,24 +172,38 @@ class UtilityCog(commands.Cog):
             color=0x3498DB,
         )
 
-        categories = {
-            "🎮 Roblox": ["/populargames"],
-            "🤖 AI Scanner": ["/scan"],
-            "🛡️ Moderation": [
-                "/clear", "/purge", "/slowmode", "/lock", "/unlock",
-                "/kick", "/ban", "/unban", "/timeout", "/warn", "/warnings"
-            ],
-            "📊 Server Info": [
-                "/serverinfo", "/userinfo", "/roleinfo", "/channelinfo",
-                "/avatar", "/roles", "/channels", "/membercount"
-            ],
-            "🔧 Utility": [
-                "/ping", "/uptime", "/botinfo", "/help",
-                "/invite", "/timestamp", "/poll", "/remind"
-            ]
+        known_categories = {
+            "🎮 Roblox": {"populargames"},
+            "🤖 AI Scanner": {"scan"},
+            "🛡️ Moderation": {
+                "clear", "purge", "slowmode", "lock", "unlock",
+                "kick", "ban", "unban", "timeout", "warn", "warnings"
+            },
+            "📊 Server Info": {
+                "serverinfo", "userinfo", "roleinfo", "channelinfo",
+                "avatar", "roles", "channels", "membercount"
+            },
+            "🔧 Utility": {
+                "ping", "uptime", "botinfo", "help",
+                "invite", "timestamp", "poll", "remind"
+            }
         }
 
-        for cat_title, cmds in categories.items():
+        registered_commands = {cmd.name for cmd in self.bot.tree.get_commands()}
+        categorized: dict[str, list[str]] = {}
+        placed = set()
+
+        for cat, name_set in known_categories.items():
+            present = sorted([f"/{name}" for name in name_set if name in registered_commands])
+            if present:
+                categorized[cat] = present
+                placed.update(name_set)
+
+        other = sorted([f"/{name}" for name in registered_commands if name not in placed])
+        if other:
+            categorized["✨ Other"] = other
+
+        for cat_title, cmds in categorized.items():
             embed.add_field(name=cat_title, value=" • ".join(cmds), inline=False)
 
         await interaction.response.send_message(embed=embed)
