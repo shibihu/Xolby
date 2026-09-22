@@ -1,4 +1,4 @@
-"""SQLite database helper for persistent storage of warnings and reminders.
+"""SQLite database helper for persistent storage of warnings, reminders, and channel lock states.
 
 Thread-safe database operations using sqlite3 for local persistence.
 """
@@ -8,9 +8,10 @@ from __future__ import annotations
 import datetime
 import logging
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Generator, Optional
 
 log = logging.getLogger(__name__)
 
@@ -45,10 +46,14 @@ class Database:
         self.db_path = Path(db_path)
         self._init_db()
 
-    def _get_connection(self) -> sqlite3.Connection:
+    @contextmanager
+    def _get_connection(self) -> Generator[sqlite3.Connection, None, None]:
         conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         """Create necessary tables if they do not exist."""
@@ -76,6 +81,14 @@ class Database:
                     message TEXT NOT NULL,
                     remind_at TEXT NOT NULL,
                     completed INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS channel_locks (
+                    channel_id INTEGER PRIMARY KEY,
+                    previous_send_messages INTEGER
                 )
                 """
             )
@@ -204,6 +217,41 @@ class Database:
                 "UPDATE reminders SET completed = 1 WHERE id = ?", (reminder_id,)
             )
             conn.commit()
+
+    # ---------------------------------------------------------------------------
+    # Channel Locks
+    # ---------------------------------------------------------------------------
+    def save_channel_lock(self, channel_id: int, previous_send_messages: Optional[bool]) -> None:
+        val = None if previous_send_messages is None else (1 if previous_send_messages else 0)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO channel_locks (channel_id, previous_send_messages)
+                VALUES (?, ?)
+                """,
+                (channel_id, val),
+            )
+            conn.commit()
+
+    def get_and_clear_channel_lock(self, channel_id: int) -> tuple[bool, Optional[bool]]:
+        """Returns (has_saved_state, previous_send_messages). Removes entry upon retrieval."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT previous_send_messages FROM channel_locks WHERE channel_id = ?",
+                (channel_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return False, None
+
+            val = row["previous_send_messages"]
+            prev_bool = None if val is None else bool(val)
+
+            cursor.execute("DELETE FROM channel_locks WHERE channel_id = ?", (channel_id,))
+            conn.commit()
+            return True, prev_bool
 
 
 db = Database()

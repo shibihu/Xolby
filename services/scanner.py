@@ -507,6 +507,13 @@ def scan_project(
             result.hit_total_limit = True
             break
 
+        # Deterministic Python syntax validation on raw source before sanitization
+        if relative.suffix.lower() == '.py':
+            try:
+                compile(text, relative_posix, 'exec')
+            except SyntaxError as exc:
+                log.debug('Deterministic syntax check on %s: line %s: %s', relative_posix, exc.lineno, exc.msg)
+
         sanitized, redactions = redact_secrets(text)
 
         result.files.append(

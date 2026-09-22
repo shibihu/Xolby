@@ -89,10 +89,11 @@ class UtilityCog(commands.Cog):
                         await channel.send(
                             f"⏰ <@{r.user_id}> **Reminder:** {r.message}"
                         )
+                        db.mark_reminder_completed(r.id)
                     except Exception as exc:
                         log.warning("Could not deliver reminder #%d: %s", r.id, exc)
-
-                db.mark_reminder_completed(r.id)
+                else:
+                    log.warning("Could not find valid messageable channel %d for reminder #%d", r.channel_id, r.id)
         except Exception as exc:
             log.exception("Error in reminder background task: %s", exc)
 
