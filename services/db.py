@@ -1,4 +1,4 @@
-"""SQLite database helper for persistent storage of warnings, reminders, and channel lock states.
+"""SQLite database helper for persistent storage of warnings, reminders, channel lock states, and live trackers.
 
 Thread-safe database operations using sqlite3 for local persistence.
 """
@@ -37,6 +37,17 @@ class ReminderRecord:
     message: str
     remind_at: str
     completed: bool
+
+
+@dataclass(frozen=True)
+class LiveTrackerRecord:
+    id: int
+    guild_id: int
+    channel_id: int
+    message_id: int
+    enabled: bool
+    created_at: str
+    updated_at: str
 
 
 class Database:
@@ -89,6 +100,19 @@ class Database:
                 CREATE TABLE IF NOT EXISTS channel_locks (
                     channel_id INTEGER PRIMARY KEY,
                     previous_send_messages INTEGER
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS popular_game_live_trackers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL UNIQUE,
+                    message_id INTEGER NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 )
                 """
             )
@@ -252,6 +276,87 @@ class Database:
             cursor.execute("DELETE FROM channel_locks WHERE channel_id = ?", (channel_id,))
             conn.commit()
             return True, prev_bool
+
+    # ---------------------------------------------------------------------------
+    # Live Trackers
+    # ---------------------------------------------------------------------------
+    def add_or_update_live_tracker(self, guild_id: int, channel_id: int, message_id: int) -> LiveTrackerRecord:
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO popular_game_live_trackers (guild_id, channel_id, message_id, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, 1, ?, ?)
+                ON CONFLICT(channel_id) DO UPDATE SET
+                    guild_id = excluded.guild_id,
+                    message_id = excluded.message_id,
+                    enabled = 1,
+                    updated_at = excluded.updated_at
+                """,
+                (guild_id, channel_id, message_id, now_iso, now_iso),
+            )
+            conn.commit()
+            cursor.execute(
+                "SELECT id, guild_id, channel_id, message_id, enabled, created_at, updated_at FROM popular_game_live_trackers WHERE channel_id = ?",
+                (channel_id,),
+            )
+            row = cursor.fetchone()
+
+        return LiveTrackerRecord(
+            id=row["id"],
+            guild_id=row["guild_id"],
+            channel_id=row["channel_id"],
+            message_id=row["message_id"],
+            enabled=bool(row["enabled"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def get_active_live_trackers(self) -> list[LiveTrackerRecord]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, guild_id, channel_id, message_id, enabled, created_at, updated_at
+                FROM popular_game_live_trackers
+                WHERE enabled = 1
+                ORDER BY id ASC
+                """
+            )
+            rows = cursor.fetchall()
+
+        return [
+            LiveTrackerRecord(
+                id=row["id"],
+                guild_id=row["guild_id"],
+                channel_id=row["channel_id"],
+                message_id=row["message_id"],
+                enabled=bool(row["enabled"]),
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
+
+    def remove_live_tracker(self, channel_id: int) -> None:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM popular_game_live_trackers WHERE channel_id = ?",
+                (channel_id,),
+            )
+            conn.commit()
+
+    def deactivate_live_tracker(self, channel_id: int) -> None:
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE popular_game_live_trackers SET enabled = 0, updated_at = ? WHERE channel_id = ?",
+                (now_iso, channel_id),
+            )
+            conn.commit()
 
 
 db = Database()

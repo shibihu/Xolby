@@ -3,6 +3,7 @@ import datetime
 import logging
 import os
 import sys
+import time
 import traceback
 import aiohttp
 import discord
@@ -10,7 +11,8 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from services.roblox import get_top_games
+from services.db import db
+from services.roblox import roblox_cache, get_top_games
 
 load_dotenv()
 
@@ -25,10 +27,149 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 intents = discord.Intents.default()
 
 
+def build_popular_games_embed(games: list[dict], live_status: str = "🟢 LIVE") -> discord.Embed:
+    embed = discord.Embed(
+        title="🔥 Roblox — Top 20 Popular Games",
+        description="เรียงตามจำนวนผู้เล่นที่กำลังเล่นอยู่จากข้อมูลล่าสุดที่ Roblox API ส่งกลับมา",
+        color=0xF2A900,
+    )
+
+    lines = []
+    for i, game in enumerate(games[:20], 1):
+        name = discord.utils.escape_markdown(game["name"])
+        players = f'{game["playing"]:,}'
+        link = f'https://www.roblox.com/games/{game["rootPlaceId"]}'
+        lines.append(f"**{i}. [{name}]({link})**\n👥 `{players}` active players")
+
+    embed.description += "\n\n" + "\n\n".join(lines)
+    embed.set_footer(text=f"Roblox Popular Games • {live_status} • fetched just now")
+    return embed
+
+
+class LiveTrackerManager:
+    """Manages editing active Discord live tracker messages across servers.
+
+    Consumes fresh data from RobloxLiveCache and updates Discord messages at ~1s interval,
+    safely handling Discord rate limits, missing permissions, and deleted messages.
+    """
+
+    def __init__(self, bot: commands.Bot, update_interval: float = 1.0) -> None:
+        self.bot = bot
+        self.update_interval = update_interval
+        self._running = False
+        self._task: asyncio.Task | None = None
+        self._active_trackers: dict[int, dict] = {}  # channel_id -> {'guild_id': int, 'message_id': int}
+
+    def start(self) -> None:
+        if not self._running:
+            self._running = True
+            self._task = asyncio.create_task(self._update_loop())
+            log.info("[LIVE GAMES] LiveTrackerManager started.")
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        log.info("[LIVE GAMES] LiveTrackerManager stopped.")
+
+    def load_trackers_from_db(self) -> None:
+        records = db.get_active_live_trackers()
+        for r in records:
+            self._active_trackers[r.channel_id] = {
+                "guild_id": r.guild_id,
+                "message_id": r.message_id,
+            }
+        log.info("[LIVE GAMES] Loaded %d active tracker(s) from database.", len(records))
+
+    def register_tracker(self, guild_id: int, channel_id: int, message_id: int) -> None:
+        db.add_or_update_live_tracker(guild_id, channel_id, message_id)
+        self._active_trackers[channel_id] = {
+            "guild_id": guild_id,
+            "message_id": message_id,
+        }
+        log.info("[LIVE GAMES] Registered live tracker for channel %d (message %d)", channel_id, message_id)
+
+    def unregister_tracker(self, channel_id: int) -> None:
+        db.remove_live_tracker(channel_id)
+        self._active_trackers.pop(channel_id, None)
+        log.info("[LIVE GAMES] Unregistered live tracker for channel %d", channel_id)
+
+    async def _update_loop(self) -> None:
+        await self.bot.wait_until_ready()
+
+        while self._running:
+            start_time = time.monotonic()
+
+            if self._active_trackers:
+                games = roblox_cache.last_games
+                if games:
+                    embed = build_popular_games_embed(games)
+                    channel_ids = list(self._active_trackers.keys())
+
+                    for channel_id in channel_ids:
+                        if not self._running:
+                            break
+                        tracker = self._active_trackers.get(channel_id)
+                        if not tracker:
+                            continue
+
+                        message_id = tracker["message_id"]
+
+                        # Resolve channel
+                        channel = self.bot.get_channel(channel_id)
+                        if channel is None:
+                            try:
+                                channel = await self.bot.fetch_channel(channel_id)
+                            except (discord.NotFound, discord.Forbidden):
+                                log.warning("[LIVE GAMES] Channel %d not found or inaccessible. Deactivating tracker.", channel_id)
+                                self.unregister_tracker(channel_id)
+                                continue
+                            except Exception as exc:
+                                log.warning("[LIVE GAMES] Could not fetch channel %d: %s", channel_id, exc)
+                                continue
+
+                        if not isinstance(channel, discord.abc.Messageable):
+                            log.warning("[LIVE GAMES] Channel %d is not messageable. Deactivating tracker.", channel_id)
+                            self.unregister_tracker(channel_id)
+                            continue
+
+                        # Fetch and edit message
+                        try:
+                            msg = await channel.fetch_message(message_id)
+                            await msg.edit(embed=embed)
+                        except discord.NotFound:
+                            log.warning("[LIVE GAMES] Tracker message %d in channel %d deleted. Removing tracker.", message_id, channel_id)
+                            self.unregister_tracker(channel_id)
+                        except discord.Forbidden:
+                            log.warning("[LIVE GAMES] Missing permission to edit message in channel %d. Removing tracker.", channel_id)
+                            self.unregister_tracker(channel_id)
+                        except discord.HTTPException as exc:
+                            if exc.status == 429:
+                                retry_after = getattr(exc, "retry_after", 5.0) or 5.0
+                                log.warning("[LIVE GAMES] Discord rate limited (429). Sleeping %.1fs", retry_after)
+                                await asyncio.sleep(retry_after)
+                            else:
+                                log.warning("[LIVE GAMES] Discord HTTP Exception %d editing message in channel %d: %s", exc.status, channel_id, exc)
+                        except Exception as exc:
+                            log.warning("[LIVE GAMES] Unexpected error updating tracker for channel %d: %s", channel_id, exc)
+
+            elapsed = time.monotonic() - start_time
+            sleep_time = max(0.1, self.update_interval - elapsed)
+            try:
+                await asyncio.sleep(sleep_time)
+            except asyncio.CancelledError:
+                break
+
+
 class PopularGamesBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
         self.start_time = datetime.datetime.now(datetime.timezone.utc)
+        self.live_tracker_manager = LiveTrackerManager(self)
 
         # Register /populargames directly on self.tree in __init__
         @self.tree.command(name="populargames", description="Show the current Roblox Top 20 games by active players.")
@@ -64,24 +205,25 @@ class PopularGamesBot(commands.Bot):
                 await interaction.followup.send("❌ Roblox did not return any games.")
                 return
 
-            embed = discord.Embed(
-                title="🔥 Roblox — Top 20 Popular Games",
-                description="เรียงตามจำนวนผู้เล่นที่กำลังเล่นอยู่จากข้อมูลล่าสุดที่ Roblox API ส่งกลับมา",
-                color=0xF2A900,
-            )
+            embed = build_popular_games_embed(games)
+            msg = await interaction.followup.send(embed=embed, wait=True)
 
-            lines = []
-            for i, game in enumerate(games[:20], 1):
-                name = discord.utils.escape_markdown(game["name"])
-                players = f'{game["playing"]:,}'
-                link = f'https://www.roblox.com/games/{game["rootPlaceId"]}'
-                lines.append(f"**{i}. [{name}]({link})**\n👥 `{players}` active players")
-
-            embed.description += "\n\n" + "\n\n".join(lines)
-            embed.set_footer(text="Roblox Popular Games • fetched just now")
-            await interaction.followup.send(embed=embed)
+            if msg:
+                guild_id = interaction.guild_id or 0
+                channel_id = interaction.channel_id or 0
+                if channel_id:
+                    self.live_tracker_manager.register_tracker(
+                        guild_id=guild_id,
+                        channel_id=channel_id,
+                        message_id=msg.id,
+                    )
 
     async def setup_hook(self):
+        # Start Roblox cache & live tracker manager
+        roblox_cache.start()
+        self.live_tracker_manager.start()
+        self.live_tracker_manager.load_trackers_from_db()
+
         extensions = [
             "commands.clear",
             "commands.info",
@@ -145,6 +287,11 @@ class PopularGamesBot(commands.Bot):
             print("Mode: GLOBAL")
             print(f"Synced commands: {len(synced)}")
             log.info("[SYNC] Mode: GLOBAL | Synced: %d", len(synced))
+
+    async def close(self):
+        await self.live_tracker_manager.stop()
+        await roblox_cache.stop()
+        await super().close()
 
 
 bot = PopularGamesBot()
