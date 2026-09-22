@@ -419,8 +419,8 @@ class GeminiAnalyzer:
                 async with session.post(url, json=payload, timeout=timeout) as response:
                     status = response.status
                     if status == 200:
-                        data = await response.json()
                         try:
+                            data = await response.json()
                             candidates = data.get("candidates", [])
                             if candidates:
                                 parts = candidates[0].get("content", {}).get("parts", [])
@@ -428,20 +428,30 @@ class GeminiAnalyzer:
                                 text = "".join(text_parts)
                                 if text.strip():
                                     return text
+                        except (json.JSONDecodeError, ValueError) as exc:
+                            log.warning(
+                                "[Gemini] Model %s attempt %d/%d invalid JSON response: %s: %s",
+                                model, attempt, max_attempts, type(exc).__name__, exc
+                            )
+                            if attempt == max_attempts:
+                                raise GeminiError(f"Failed to parse response structure: {exc}") from exc
                         except Exception as exc:
                             raise GeminiError(f"Failed to parse response structure: {exc}") from exc
-                        raise GeminiError("Gemini returned response without text content")
 
-                    body_text = await response.text()
-                    if status in TRANSIENT_STATUS_CODES:
-                        log.warning(
-                            "[Gemini] Model %s attempt %d/%d failed: HTTP %d",
-                            model, attempt, max_attempts, status
-                        )
+                        if attempt == max_attempts:
+                            raise GeminiError("Gemini returned response without text content")
+
                     else:
-                        # Non-transient error (e.g. 400 Bad Request, 401/403 Auth error)
-                        log.error("[Gemini] Model %s returned HTTP %d: %s", model, status, body_text)
-                        raise GeminiError(f"Gemini API error (HTTP {status}): {body_text[:200]}")
+                        body_text = await response.text()
+                        if status in TRANSIENT_STATUS_CODES:
+                            log.warning(
+                                "[Gemini] Model %s attempt %d/%d failed: HTTP %d",
+                                model, attempt, max_attempts, status
+                            )
+                        else:
+                            # Non-transient error (e.g. 400 Bad Request, 401/403 Auth error)
+                            log.error("[Gemini] Model %s returned HTTP %d: %s", model, status, body_text)
+                            raise GeminiError(f"Gemini API error (HTTP {status}): {body_text[:200]}")
 
             except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
                 log.warning(
