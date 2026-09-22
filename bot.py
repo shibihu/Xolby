@@ -35,6 +35,13 @@ class PopularGamesBot(commands.Bot):
             await self.load_extension("commands.scan")
         except Exception:
             log.exception("Failed to load commands.scan; /populargames is unaffected")
+
+        # Channel clear command (/clear). Loaded defensively.
+        try:
+            await self.load_extension("commands.clear")
+        except Exception:
+            log.exception("Failed to load commands.clear; /populargames is unaffected")
+
         await self.tree.sync()
 
 
