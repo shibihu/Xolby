@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import logging
 import os
 import aiohttp
@@ -27,6 +28,7 @@ intents = discord.Intents.default()
 class PopularGamesBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
+        self.start_time = datetime.datetime.now(datetime.timezone.utc)
 
     async def setup_hook(self):
         # Read-only scanner feature (/scan). Loaded defensively so a problem
@@ -41,6 +43,24 @@ class PopularGamesBot(commands.Bot):
             await self.load_extension("commands.clear")
         except Exception:
             log.exception("Failed to load commands.clear; /populargames is unaffected")
+
+        # Moderation commands (/purge, /slowmode, /lock, /unlock, /kick, /ban, /unban, /timeout, /warn, /warnings)
+        try:
+            await self.load_extension("commands.moderation")
+        except Exception:
+            log.exception("Failed to load commands.moderation; /populargames is unaffected")
+
+        # Server Info commands (/serverinfo, /userinfo, /roleinfo, /channelinfo, /avatar, /roles, /channels, /membercount)
+        try:
+            await self.load_extension("commands.info")
+        except Exception:
+            log.exception("Failed to load commands.info; /populargames is unaffected")
+
+        # Utility commands (/ping, /uptime, /botinfo, /help, /invite, /timestamp, /poll, /remind)
+        try:
+            await self.load_extension("commands.utility")
+        except Exception:
+            log.exception("Failed to load commands.utility; /populargames is unaffected")
 
         await self.tree.sync()
 
