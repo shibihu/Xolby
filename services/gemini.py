@@ -49,6 +49,12 @@ Find:
 - dangerous assumptions
 Do not invent files, functions, APIs, line numbers, or behavior.
 Only report issues supported by the provided source.
+
+IMPORTANT SANITIZATION INSTRUCTIONS:
+- Notice that '[REDACTED]', '[REDACTED_PRIVATE_KEY]', and similar placeholders are security redactions inserted by the scanner.
+- They are NOT literal source code, invalid syntax, exposed secrets, or broken identifiers.
+- Do NOT report syntax errors, missing credentials, or invalid tokens merely because a '[REDACTED]' placeholder appears in the code.
+
 Every issue must have a severity:
 CRITICAL
 WARNING

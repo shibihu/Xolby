@@ -265,6 +265,7 @@ class ModerationCog(commands.Cog):
 
         try:
             overwrite = channel.overwrites_for(guild.default_role)
+            db.save_channel_lock(channel.id, overwrite.send_messages)
             overwrite.send_messages = False
             await channel.set_permissions(guild.default_role, overwrite=overwrite)
             await interaction.response.send_message("🔒 Channel locked.")
@@ -302,8 +303,9 @@ class ModerationCog(commands.Cog):
                 return
 
         try:
+            has_saved, prev_send = db.get_and_clear_channel_lock(channel.id)
             overwrite = channel.overwrites_for(guild.default_role)
-            overwrite.send_messages = None
+            overwrite.send_messages = prev_send if has_saved else None
             await channel.set_permissions(guild.default_role, overwrite=overwrite)
             await interaction.response.send_message("🔓 Channel unlocked.")
         except discord.Forbidden:
