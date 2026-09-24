@@ -176,6 +176,9 @@ class UtilityCog(commands.Cog):
         known_categories = {
             "🎮 Roblox": {"populargames"},
             "🤖 AI Scanner": {"scan"},
+            "🎵 TikTok Analytics": {
+                "tiktokconnect", "tiktokstats", "tiktoklive", "tiktokhistory", "tiktokdisconnect"
+            },
             "🛡️ Moderation": {
                 "clear", "purge", "slowmode", "lock", "unlock",
                 "kick", "ban", "unban", "timeout", "warn", "warnings"
