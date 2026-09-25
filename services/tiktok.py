@@ -12,9 +12,25 @@ import logging
 import os
 from typing import Any, Optional
 import aiohttp
-from cryptography.fernet import Fernet, InvalidToken
 
 log = logging.getLogger(__name__)
+
+# Safely import cryptography if available in target environment
+IS_ENCRYPTION_AVAILABLE = False
+Fernet = None
+InvalidToken = Exception
+
+try:
+    from cryptography.fernet import Fernet as _Fernet, InvalidToken as _InvalidToken
+    Fernet = _Fernet
+    InvalidToken = _InvalidToken
+    IS_ENCRYPTION_AVAILABLE = True
+except (ImportError, Exception) as _crypto_err:
+    log.warning(
+        "Cryptography module failed to load (%s: %s). TikTok token encryption will be unavailable.",
+        type(_crypto_err).__name__,
+        _crypto_err,
+    )
 
 # Official TikTok API Endpoints
 TIKTOK_AUTH_URL = "https://www.tiktok.com/v2/auth/authorize/"
@@ -36,10 +52,41 @@ UNAVAILABLE_STUDIO_METRICS = [
 
 
 # ---------------------------------------------------------------------------
+# TikTok API Custom Exceptions
+# ---------------------------------------------------------------------------
+class TikTokAPIError(Exception):
+    """General error communicating with TikTok API."""
+    pass
+
+
+class TikTokTokenExpiredError(TikTokAPIError):
+    """User authorization token expired and needs reconnection."""
+    pass
+
+
+class TikTokRateLimitError(TikTokAPIError):
+    """TikTok API rate limit reached."""
+    pass
+
+
+class TikTokSecurityError(TikTokAPIError):
+    """Raised when secure token encryption is unavailable or encryption/decryption fails."""
+    pass
+
+
+# ---------------------------------------------------------------------------
 # Token Encryption Utilities
 # ---------------------------------------------------------------------------
-def _get_fernet() -> Fernet:
+def is_encryption_available() -> bool:
+    """Check if secure token encryption backend is available."""
+    return IS_ENCRYPTION_AVAILABLE and Fernet is not None
+
+
+def _get_fernet() -> Any:
     """Derive a deterministic 32-byte Fernet key from environment secrets."""
+    if not is_encryption_available():
+        raise TikTokSecurityError("Secure token encryption is unavailable in this environment.")
+
     secret = (
         os.getenv("TIKTOK_TOKEN_ENCRYPTION_KEY")
         or os.getenv("DISCORD_TOKEN")
@@ -52,27 +99,41 @@ def _get_fernet() -> Fernet:
 
 
 def encrypt_token(plaintext: str) -> str:
-    """Encrypt a sensitive token string at rest."""
+    """Encrypt a sensitive token string at rest.
+
+    Raises TikTokSecurityError if secure encryption is unavailable.
+    NEVER falls back to returning plaintext tokens.
+    """
     if not plaintext:
         return ""
+    if not is_encryption_available():
+        raise TikTokSecurityError("Secure token encryption is unavailable in this environment.")
+
     try:
         f = _get_fernet()
         return f.encrypt(plaintext.encode("utf-8")).decode("utf-8")
     except Exception as e:
         log.error("Failed to encrypt token: %s", type(e).__name__)
-        return plaintext
+        raise TikTokSecurityError("Token encryption failed.") from e
 
 
 def decrypt_token(ciphertext: str) -> str:
-    """Decrypt an encrypted token string at rest."""
+    """Decrypt an encrypted token string at rest.
+
+    Raises TikTokSecurityError if secure encryption is unavailable.
+    NEVER falls back to returning unencrypted or invalid tokens.
+    """
     if not ciphertext:
         return ""
+    if not is_encryption_available():
+        raise TikTokSecurityError("Secure token encryption is unavailable in this environment.")
+
     try:
         f = _get_fernet()
         return f.decrypt(ciphertext.encode("utf-8")).decode("utf-8")
-    except (InvalidToken, Exception):
-        # Fallback if text was stored unencrypted or key changed
-        return ciphertext
+    except (InvalidToken, Exception) as e:
+        log.error("Failed to decrypt token: %s", type(e).__name__)
+        raise TikTokSecurityError("Token decryption failed.") from e
 
 
 # ---------------------------------------------------------------------------
@@ -125,24 +186,6 @@ def calculate_engagement_metrics(
             views, likes, comments, shares, favorites
         ),
     }
-
-
-# ---------------------------------------------------------------------------
-# TikTok API Custom Exceptions
-# ---------------------------------------------------------------------------
-class TikTokAPIError(Exception):
-    """General error communicating with TikTok API."""
-    pass
-
-
-class TikTokTokenExpiredError(TikTokAPIError):
-    """User authorization token expired and needs reconnection."""
-    pass
-
-
-class TikTokRateLimitError(TikTokAPIError):
-    """TikTok API rate limit reached."""
-    pass
 
 
 # ---------------------------------------------------------------------------
@@ -348,9 +391,17 @@ async def get_valid_access_token(
     if not account:
         return None, None
 
+    if not is_encryption_available():
+        log.warning("Encryption unavailable; cannot decrypt access token for user %s", discord_user_id)
+        return None, account
+
     now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
-    decrypted_access = decrypt_token(account.access_token)
-    decrypted_refresh = decrypt_token(account.refresh_token) if account.refresh_token else ""
+    try:
+        decrypted_access = decrypt_token(account.access_token)
+        decrypted_refresh = decrypt_token(account.refresh_token) if account.refresh_token else ""
+    except TikTokSecurityError:
+        log.error("Failed to decrypt tokens for user %s due to security error.", discord_user_id)
+        return None, account
 
     # Check if access token is still valid (60s buffer)
     if account.expires_at > now_ts + 60 and decrypted_access:

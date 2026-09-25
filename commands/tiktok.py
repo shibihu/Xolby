@@ -9,7 +9,12 @@ from discord import app_commands
 from discord.ext import commands
 
 from services.db import db
-from services.tiktok import TikTokAPIClient, decrypt_token
+from services.tiktok import (
+    TikTokAPIClient,
+    TikTokSecurityError,
+    decrypt_token,
+    is_encryption_available,
+)
 from services.tiktok_analytics import (
     build_tiktok_stats_embed,
     generate_history_chart,
@@ -35,6 +40,15 @@ class TikTokCog(commands.Cog):
     )
     async def tiktokconnect(self, interaction: discord.Interaction) -> None:
         """Initiate official TikTok OAuth account connection flow."""
+        if not is_encryption_available():
+            await interaction.response.send_message(
+                "⚠️ **TikTok Secure Storage Unavailable**\n"
+                "Secure token encryption (`cryptography`) is unavailable in this environment.\n"
+                "TikTok account connection is disabled to prevent storing unencrypted credentials.",
+                ephemeral=True,
+            )
+            return
+
         existing_acc = db.get_tiktok_account(interaction.user.id)
         if existing_acc and existing_acc.display_name:
             prompt_msg = f" You are currently connected as **@{existing_acc.display_name}**. Authorizing again will update your connection."
@@ -78,6 +92,14 @@ class TikTokCog(commands.Cog):
     )
     async def tiktokstats(self, interaction: discord.Interaction) -> None:
         """Retrieve recent TikTok video metrics and render analytics embed."""
+        if not is_encryption_available():
+            await interaction.response.send_message(
+                "⚠️ **TikTok Secure Storage Unavailable**\n"
+                "Secure token encryption is unavailable in this environment.",
+                ephemeral=True,
+            )
+            return
+
         await interaction.response.defer()
 
         analytics = await tiktok_cache.get_user_analytics(interaction.user.id)
@@ -132,6 +154,14 @@ class TikTokCog(commands.Cog):
     )
     async def tiktoklive(self, interaction: discord.Interaction) -> None:
         """Start or update a live tracking message in current channel."""
+        if not is_encryption_available():
+            await interaction.response.send_message(
+                "⚠️ **TikTok Secure Storage Unavailable**\n"
+                "Secure token encryption is unavailable in this environment.",
+                ephemeral=True,
+            )
+            return
+
         await interaction.response.defer()
 
         analytics = await tiktok_cache.get_user_analytics(interaction.user.id)
@@ -269,15 +299,19 @@ class TikTokCog(commands.Cog):
             )
             return
 
-        # Attempt to revoke token with official API
-        decrypted_token = decrypt_token(account.access_token)
-        client = TikTokAPIClient()
-        try:
-            await client.revoke_token(decrypted_token)
-        except Exception as exc:
-            log.warning("Revoke token API call error during disconnect: %s", type(exc).__name__)
-        finally:
-            await client.close()
+        # Attempt to revoke token with official API if decryption is available
+        if is_encryption_available():
+            try:
+                decrypted_token = decrypt_token(account.access_token)
+                client = TikTokAPIClient()
+                try:
+                    await client.revoke_token(decrypted_token)
+                except Exception as exc:
+                    log.warning("Revoke token API call error during disconnect: %s", type(exc).__name__)
+                finally:
+                    await client.close()
+            except TikTokSecurityError:
+                pass
 
         # Delete account and associated live trackers from database
         db.delete_tiktok_account(interaction.user.id)

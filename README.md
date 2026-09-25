@@ -31,6 +31,16 @@ All features run natively in Python 3.10+, including Termux on Android ARM64 (Py
 
 ---
 
+## Termux & Python 3.14 Compatibility
+
+Xolby is engineered to start reliably on all environments, including Termux Android ARM64:
+- **Zero Native Chart Dependencies**: Historical growth charts (`/tiktokhistory`) use a pure Python standard library PNG encoder (`struct`, `zlib`, `io`) with zero C/C++ compilation requirements.
+- **Graceful Security Backend Handling**: If the native `cryptography` module is unavailable or fails to load on Termux, Xolby starts up normally without crashing. All core commands (`/populargames`, `/scan`, moderation, info, utility) remain 100% operational.
+- **No Insecure Plaintext Storage**: If secure encryption is unavailable, TikTok account connection is safely disabled rather than storing unencrypted tokens in SQLite.
+- **Termux Cryptography Note**: To enable TikTok token storage on Termux ARM64, install native cryptography via `pkg install python-cryptography` or `pkg install tur-repo && pkg install python-cryptography`.
+
+---
+
 ## TikTok Analytics Architecture
 
 ```text
@@ -45,12 +55,6 @@ TikTok Display API v2 ← Centralized Analytics Cache ← TikTokLiveManager Asyn
                                           Persistent Discord Live Message
 ```
 
-### Pure Python Lightweight Chart System
-Historical growth charts (`/tiktokhistory`) are generated using a custom pure-Python standard library PNG encoder (`struct`, `zlib`, `io`, `datetime`).
-- **No Native Dependencies**: Eliminates `matplotlib`, `cmake`, `ninja`, or C/C++ compilation requirements.
-- **Termux & Python 3.14 Ready**: Installs cleanly with `pip install -r requirements.txt` on Termux Android ARM64 without native build errors.
-- **Discord Mobile Optimized**: 16:9 dual-scale dark-themed chart displaying Views, Likes, Comments, and Shares over time.
-
 ### Official API Scopes & Metrics
 Uses TikTok's official Display API v2:
 - **Scopes**: `user.info.basic`, `video.list`
@@ -64,7 +68,7 @@ Uses TikTok's official Display API v2:
 
 ### Security Guarantees
 - **No Password Storage**: Never asks for or stores TikTok passwords.
-- **Token Encryption**: Access and refresh tokens are encrypted at rest using Fernet encryption (`cryptography`).
+- **Token Encryption**: Access and refresh tokens are encrypted at rest using Fernet encryption (`cryptography`). Plaintext tokens are NEVER stored.
 - **No Token Logging**: Tokens and client secrets are never printed in logs, embeds, or exception messages.
 
 ---
