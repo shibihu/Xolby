@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Xolby — Discord Bot with TikTok Integration{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  <header>
+    <div class="container">
+      <a href="/" class="logo">
+        <span>Xolby</span> Bot
+      </a>
+      <nav>
+        <ul>
+          <li><a href="/" class="{% if active_page == 'home' %}active{% endif %}">Home</a></li>
+          <li><a href="/privacy" class="{% if active_page == 'privacy' %}active{% endif %}">Privacy Policy</a></li>
+          <li><a href="/terms" class="{% if active_page == 'terms' %}active{% endif %}">Terms of Service</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="container">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+
+  <footer>
+    <div class="container">
+      <div>
+        <p>&copy; {{ current_year }} Xolby Bot. All rights reserved.</p>
+      </div>
+      <div class="footer-links">
+        <a href="/">Home</a>
+        <a href="/privacy">Privacy Policy</a>
+        <a href="/terms">Terms of Service</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

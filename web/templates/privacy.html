@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block title %}Privacy Policy — Xolby{% endblock %}
+
+{% block content %}
+<div class="legal-content">
+  <h1>Privacy Policy</h1>
+  <div class="effective-date">Effective Date: March 2026 | Last Updated: March 2026</div>
+
+  <p>Xolby ("we", "our", or "us") is committed to protecting your privacy. This Privacy Policy explains how Xolby collects, uses, stores, and protects information when you use our Discord bot and web application services, including our TikTok integration features.</p>
+
+  <h2>1. Information We Collect</h2>
+  <p>Xolby only collects the minimum data required to deliver core bot and integration functionality:</p>
+  <ul>
+    <li><strong>Discord User Identifier & Guild Data:</strong> We store Discord user IDs, guild (server) IDs, and channel IDs to manage user settings, moderation logs/warnings, reminders, and persistent live tracker embeds.</li>
+    <li><strong>TikTok Authorization Data:</strong> When you connect your TikTok account via official Web OAuth, we store your TikTok Open ID, display name, and OAuth tokens.</li>
+    <li><strong>TikTok Video Metrics Snapshots:</strong> For connected users, we periodically snapshot public video metrics (view count, like count, comment count, share count, favorite count, video title, and video ID) retrieved from official TikTok API endpoints to power historical charts and live stats.</li>
+  </ul>
+
+  <h2>2. How We Use Information</h2>
+  <p>We use collected data strictly for the following operational purposes:</p>
+  <ul>
+    <li>Retrieving and displaying your recent public TikTok video analytics and calculated engagement rates in response to Discord commands (e.g., <code>/tiktokstats</code>, <code>/tiktoklive</code>, <code>/tiktokhistory</code>).</li>
+    <li>Maintaining active live tracker embeds across authorized Discord server channels.</li>
+    <li>Managing Discord moderation actions, warnings, and channel state settings.</li>
+  </ul>
+
+  <h2>3. Token Security & Storage</h2>
+  <p>Security of user credentials is our top priority:</p>
+  <ul>
+    <li><strong>OAuth Secrets:</strong> TikTok Client Secrets, access tokens, and refresh tokens remain strictly server-side.</li>
+    <li><strong>Encryption at Rest:</strong> Access tokens and refresh tokens are encrypted at rest in SQLite using Fernet symmetric encryption. Tokens are NEVER stored in plaintext.</li>
+    <li><strong>No Password Access:</strong> Authorization occurs on official TikTok authorization servers (<code>https://www.tiktok.com/v2/auth/authorize/</code>). Xolby never requests, receives, or stores your TikTok password.</li>
+    <li><strong>No Token Exposure:</strong> Access tokens, refresh tokens, and client secrets are NEVER printed in logs, HTML output, Discord messages, or public API responses.</li>
+  </ul>
+
+  <h2>4. Data Sharing & Third-Party Services</h2>
+  <p>Xolby does NOT sell, rent, or trade user data to third parties or advertising networks. We interact with official third-party APIs solely to provide features:</p>
+  <ul>
+    <li><strong>TikTok Display API v2:</strong> Official TikTok API used to fetch user basic info and public video statistics.</li>
+    <li><strong>Discord API:</strong> Official Discord API used to process slash commands and update messages.</li>
+    <li><strong>Google Gemini API:</strong> Optional AI API used strictly for read-only code scans when executing <code>/scan</code>.</li>
+  </ul>
+
+  <h2>5. Data Retention & Disconnection / Deletion</h2>
+  <p>You have full control over your data:</p>
+  <ul>
+    <li><strong>TikTok Disconnection:</strong> Running <code>/tiktokdisconnect</code> in Discord immediately revokes stored OAuth access tokens via TikTok's official revoke endpoint and permanently deletes your TikTok account record and active live trackers from our database.</li>
+    <li><strong>Server Removal:</strong> Server moderation logs and warnings remain tied to server IDs until purged or reset.</li>
+  </ul>
+
+  <h2>6. Children's Privacy</h2>
+  <p>Xolby is not directed to children under 13 years of age (or applicable Legal Age in your jurisdiction). We do not knowingly collect personal data from children.</p>
+
+  <h2>7. Policy Changes</h2>
+  <p>We may update this Privacy Policy from time to time to reflect service improvements or legal updates. Updated policies will be published directly on this page with a revised effective date.</p>
+
+  <h2>8. Contact Information</h2>
+  <p>If you have questions, concerns, or data deletion requests regarding this Privacy Policy, please contact us at:</p>
+  <p><strong>Contact Email:</strong> <code>{{ contact_email }}</code></p>
+</div>
+{% endblock %}

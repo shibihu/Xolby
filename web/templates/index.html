@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <h1>Xolby</h1>
+  <p>Comprehensive Discord bot with official TikTok Integration, Roblox live analytics tracking, AI Code Scanning, and Moderation suite.</p>
+  <div class="btn-group">
+    <a href="/privacy" class="btn btn-primary">Privacy Policy</a>
+    <a href="/terms" class="btn btn-secondary">Terms of Service</a>
+  </div>
+</section>
+
+<section class="features-grid">
+  <div class="card">
+    <h3>🎵 TikTok Official Integration</h3>
+    <p>Connect your TikTok account via official TikTok Web OAuth. View public video statistics, calculate real engagement rates, and track performance growth over time.</p>
+  </div>
+  <div class="card">
+    <h3>📊 Public Video Analytics</h3>
+    <p>Access official public metrics provided by TikTok Display API v2: views, likes, comments, shares, favorites, and post timestamps directly inside Discord.</p>
+  </div>
+  <div class="card">
+    <h3>🟢 Live Auto-Updating Messages</h3>
+    <p>Set up automated live message embeds that refresh automatically to reflect video view count changes and engagement growth.</p>
+  </div>
+  <div class="card">
+    <h3>🎮 Roblox Popular Games</h3>
+    <p>Track the Top 20 Roblox games ordered by live player counts with live-updating Discord embeds.</p>
+  </div>
+  <div class="card">
+    <h3>🤖 AI Code Security Scanner</h3>
+    <p>Perform read-only code security scans on configured project directories powered by Google Gemini AI.</p>
+  </div>
+  <div class="card">
+    <h3>🛡️ Server Moderation & Tools</h3>
+    <p>Complete moderation suite with kick, ban, warn, timeout, slowmode, channel locking, polling, and reminders.</p>
+  </div>
+</section>
+
+<section class="legal-content" style="margin-top: 40px;">
+  <h2>TikTok Developer & API Compliance</h2>
+  <p>Xolby strictly uses official TikTok Display API v2 endpoints (<code>user.info.basic</code>, <code>video.list</code>) to access authorized public user metrics.</p>
+  <ul>
+    <li><strong>No Password Access:</strong> OAuth account authorization takes place directly on TikTok's secure domain. Xolby never asks for or stores user passwords.</li>
+    <li><strong>Server-side Token Encryption:</strong> Access and refresh tokens are encrypted at rest on the server and never exposed in logs, API responses, or Discord messages.</li>
+    <li><strong>TikTok Studio Metrics Notice:</strong> Internal creator studio analytics such as average watch time, audience retention percentage, and full play duration are TikTok Studio-only metrics and are strictly noted as unavailable in standard Display API v2.</li>
+  </ul>
+</section>
+{% endblock %}

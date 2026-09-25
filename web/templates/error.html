@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title or "Error" }} — Xolby{% endblock %}
+
+{% block content %}
+<div class="status-box error">
+  <h1 style="color: var(--tiktok-red); font-size: 2rem; margin-bottom: 16px;">{{ title or "Authorization Error" }}</h1>
+  <p style="font-size: 1.1rem; margin-bottom: 24px;">{{ message or "An error occurred during TikTok account authorization." }}</p>
+  <p style="color: var(--text-muted); margin-bottom: 24px;">Please return to Discord and try running <code>/tiktokconnect</code> again.</p>
+  <a href="/" class="btn btn-secondary">Return to Homepage</a>
+</div>
+{% endblock %}

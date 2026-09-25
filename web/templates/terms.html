@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Terms of Service — Xolby{% endblock %}
+
+{% block content %}
+<div class="legal-content">
+  <h1>Terms of Service</h1>
+  <div class="effective-date">Effective Date: March 2026 | Last Updated: March 2026</div>
+
+  <p>Please read these Terms of Service ("Terms") carefully before using the Xolby Discord Bot and associated web services operated by Xolby ("we", "us", or "our").</p>
+
+  <h2>1. Acceptance of Terms</h2>
+  <p>By inviting Xolby to your Discord server, interacting with Xolby slash commands, or connecting your TikTok account via our web OAuth service, you agree to be bound by these Terms and our Privacy Policy. If you do not agree, do not use Xolby.</p>
+
+  <h2>2. Acceptable Use</h2>
+  <p>You agree to use Xolby in compliance with all applicable laws and regulations, as well as Discord's Terms of Service and TikTok's Terms of Service. You must not:</p>
+  <ul>
+    <li>Attempt to exploit, flood, rate-limit, or abuse Xolby bot commands or web server infrastructure.</li>
+    <li>Use Xolby to distribute malicious software, phishing links, or unauthorized spam.</li>
+    <li>Reverse engineer, decompile, or tamper with Xolby's token encryption or authentication workflows.</li>
+    <li>Attempt unauthorized access to other users' stored account data or authorization tokens.</li>
+  </ul>
+
+  <h2>3. Discord & TikTok Integration Behavior</h2>
+  <ul>
+    <li><strong>Official API Access:</strong> Xolby interacts with TikTok strictly through official developer APIs (Display API v2). We do not scrape private data, bypass permissions, or access private messages.</li>
+    <li><strong>Account Disconnection:</strong> You may disconnect your TikTok account at any time using <code>/tiktokdisconnect</code> in Discord, which immediately deletes stored credentials and revokes authorization tokens.</li>
+    <li><strong>Availability of Metrics:</strong> Metric availability depends entirely on official TikTok API responses. Advanced internal metrics (such as watch time or retention rate) are TikTok Studio-only and not provided through standard API integrations.</li>
+  </ul>
+
+  <h2>4. Service Availability & Modification</h2>
+  <p>Xolby is provided on an "AS IS" and "AS AVAILABLE" basis. We reserve the right to modify, suspend, or discontinue any feature, command, or service component (including live trackers and web routes) at any time without prior notice or liability.</p>
+
+  <h2>5. Limitation of Liability</h2>
+  <p>To the maximum extent permitted by applicable law, Xolby and its operators shall not be liable for any direct, indirect, incidental, special, consequential, or punitive damages resulting from your access to or use of (or inability to access or use) the service, including rate limits, API outages, or data loss.</p>
+
+  <h2>6. Termination</h2>
+  <p>We reserve the right to terminate or restrict access to Xolby for any user or Discord server that violates these Terms or engages in abusive behavior without prior notice.</p>
+
+  <h2>7. Changes to Terms</h2>
+  <p>We may modify these Terms at any time. Continued use of Xolby following posted changes constitutes your acceptance of the revised Terms.</p>
+
+  <h2>8. Contact Information</h2>
+  <p>For inquiries regarding these Terms of Service, please contact:</p>
+  <p><strong>Contact Email:</strong> <code>{{ contact_email }}</code></p>
+</div>
+{% endblock %}
