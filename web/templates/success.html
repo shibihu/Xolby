@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block title %}Account Connected — Xolby{% endblock %}
+
+{% block content %}
+<div class="status-box success">
+  <h1 style="color: #10b981; font-size: 2rem; margin-bottom: 16px;">✅ TikTok Connected Successfully!</h1>
+  <p style="font-size: 1.1rem; margin-bottom: 12px;">
+    {% if display_name %}
+      Your TikTok account <strong>@{{ display_name }}</strong> has been securely connected.
+    {% else %}
+      Your TikTok account has been securely connected.
+    {% endif %}
+  </p>
+  <p style="color: var(--text-muted); margin-bottom: 24px;">You can now close this browser tab and return to Discord.</p>
+  <p style="color: var(--text-muted);">Use <code>/tiktokstats</code> or <code>/tiktoklive</code> in Discord to view your analytics!</p>
+</div>
+{% endblock %}
