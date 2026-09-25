@@ -1,146 +1,124 @@
-# Roblox + System Scanner Discord Bot
+# Xolby — Discord Bot (Roblox + System Scanner + TikTok Analytics + Moderation)
 
-A Discord slash-command bot written in Python with `discord.py` that provides:
+A comprehensive Discord slash-command bot written in Python with `discord.py` that provides:
 
-- `/populargames` — Roblox current **Top Playing Now** chart in an embed
-- `/scan` — read-only **System Code Scanner** that analyzes a project directory
-  with Google Gemini REST API and posts a categorized report
+- 🎮 **Roblox Live Trackers** (`/populargames`) — Roblox Top 20 games chart with live updating embeds
+- 🤖 **System Code Scanner** (`/scan`) — Read-only code security scanner using Google Gemini REST API
+- 🎵 **TikTok Analytics System** (`/tiktokconnect`, `/tiktokstats`, `/tiktoklive`, `/tiktokhistory`, `/tiktokdisconnect`) — Official TikTok API integration for user video metrics, calculated engagement, growth tracking, historical charts, and persistent live embeds
+- 🛡️ **Moderation & Utility** — Full suite of moderation, server info, and utility commands (`/kick`, `/ban`, `/warn`, `/clear`, `/serverinfo`, `/remind`, `/poll`, etc.)
 
-Both features live in the same bot. `/populargames` and `/scan` work natively in a single **Termux** environment (or standard Linux/macOS/Windows) without requiring Ubuntu or proot-distro.
+All features run natively in a standard Python 3.10+ environment, including Termux on Android, Linux, macOS, and Windows.
 
-## Commands
+---
 
-| Command | Who can run it | What it does |
+## Commands Summary
+
+| Command | Category | Description |
 | --- | --- | --- |
-| `/populargames` | Everyone in the server | Top 20 Roblox games by active players |
-| `/scan` | Members with **Manage Server** | Reads the configured directory, sanitizes secrets, asks Gemini for issues, posts a report |
+| `/populargames` | Roblox | Top 20 Roblox games by active players (with optional live tracker) |
+| `/scan` | AI Scanner | Scans configured codebase directory for security issues with Gemini |
+| `/tiktokconnect` | TikTok Analytics | Secure official OAuth connection link for TikTok |
+| `/tiktokstats` | TikTok Analytics | View metrics and engagement rates for your latest TikTok video |
+| `/tiktoklive` | TikTok Analytics | Persistent live-updating analytics message in current channel |
+| `/tiktokhistory` | TikTok Analytics | Performance history list and generated growth chart image |
+| `/tiktokdisconnect` | TikTok Analytics | Disconnect account, revoke tokens, and delete saved credentials |
+| `/clear`, `/purge` | Moderation | Purge messages in channel |
+| `/kick`, `/ban`, `/unban`, `/timeout` | Moderation | User moderation actions |
+| `/warn`, `/warnings` | Moderation | User warning system |
+| `/slowmode`, `/lock`, `/unlock` | Moderation | Channel state controls |
+| `/serverinfo`, `/userinfo`, `/avatar` | Info | Server and member information |
+| `/ping`, `/uptime`, `/botinfo`, `/help` | Utility | Bot diagnostics and help directory |
 
-`/populargames` does **not** need Gemini. `/scan` and `/populargames` are
-independent: if Gemini is unreachable, `/populargames` keeps working.
+---
 
-## How `/populargames` works
-
-```text
-/populargames
-      ↓
-Roblox Explore API
-      ↓
-get games + playerCount directly
-      ↓
-sort by playerCount
-      ↓
-create Discord embed
-      ↓
-send response
-```
-
-`/populargames` uses the Roblox Explore API directly to retrieve game titles, root place IDs, and player counts in a single efficient step, falling back to batch requests only if necessary to prevent timeout risks.
-
-## How `/scan` works
+## TikTok Analytics Architecture
 
 ```text
-/scan
-   ↓
-check .env configuration
-   ↓
-read SCAN_DIRECTORY (read-only, on a worker thread)
-   ↓
-scan supported source/config/doc files
-   ↓
-sanitize sensitive information ([REDACTED])
-   ↓
-split the project into chunks if it is large
-   ↓
-send each chunk to Gemini REST API (aiohttp + retries + fallback model)
-   ↓
-validate + de-duplicate findings
-   ↓
-categorize CRITICAL / WARNING / INFO
-   ↓
-build Discord embeds
-   ↓
-post to REPORT_CHANNEL_ID
-   ↓
-ephemeral status message to the person who ran the command
+User → /tiktokconnect → Official TikTok OAuth → Redirect Web Callback Server
+                                                       ↓
+                                            Tokens Encrypted at Rest
+                                                       ↓
+TikTok Display API v2 ← Centralized Analytics Cache ← TikTokLiveManager Async Loop
+                                                       ↓
+                                       Database Snapshots & Growth Chart
+                                                       ↓
+                                          Persistent Discord Live Message
 ```
 
-### Read-only guarantee
+### Official API Scopes & Metrics
 
-The scanner follows one rule: **READ → SANITIZE → ANALYZE → REPORT.**
+Uses TikTok's official Display API v2:
+- **Scopes**: `user.info.basic`, `video.list`
+- **Supported API Metrics**: Views, Likes, Comments, Shares, Favorites (where available), Title, Cover Thumbnail, Posted Time, Video URL.
+- **Calculated Derived Metrics**:
+  - Like Rate: `(likes / views) * 100`
+  - Comment Rate: `(comments / views) * 100`
+  - Share Rate: `(shares / views) * 100`
+  - Total Engagement Rate: `((likes + comments + shares + favorites) / views) * 100`
+- **TikTok Studio-only Metrics**: Advanced metrics such as watch time, retention, and play time are strictly noted as TikTok Studio-only and not fabricated.
 
-It never:
+### Security Guarantees
+- **No Password Storage**: Never asks for or stores TikTok passwords.
+- **Token Encryption**: Access and refresh tokens are encrypted at rest using Fernet encryption (`TIKTOK_TOKEN_ENCRYPTION_KEY`).
+- **No Token Logging**: Tokens and client secrets are never printed in logs, embeds, or exception messages.
 
-- modifies, deletes, renames or formats any file
-- executes scanned source code or shell commands
-- installs packages
-- auto-fixes code
-- commits or pushes anything
+---
 
-## Installation
+## Installation & Setup
 
-### Python version
-
-Python **3.10+** is required (`discord.py` 2.6+). Standard Termux Python works directly!
-
-### 1. Install dependencies
+### 1. Install Dependencies
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-Dependencies:
+### 2. Configure Environment Variables
 
-- `discord.py` — Discord API
-- `aiohttp` — async HTTP for Gemini REST API & Roblox API
-- `python-dotenv` — loads `.env`
-
-Notice: `google-genai` is **no longer needed** or installed.
-
-### 2. Create `.env`
+Copy `.env.example` to `.env`:
 
 ```bash
 cp .env.example .env
 ```
 
-Then edit `.env`:
+Edit `.env` with your credentials:
 
 ```env
-DISCORD_TOKEN=your_real_discord_bot_token
-GEMINI_API_KEY=your_real_gemini_api_key
-GEMINI_MODEL=gemini-3.5-flash
-GEMINI_FALLBACK_MODEL=gemini-3.5-flash-lite
-SCAN_DIRECTORY=/sdcard/Projects/RobloxBot
-REPORT_CHANNEL_ID=123456789012345678
-SCAN_MAX_FILE_BYTES=200000
-SCAN_MAX_FILES=250
+DISCORD_TOKEN=your_discord_bot_token
+
+# System Code Scanner
+GEMINI_API_KEY=your_gemini_api_key
+SCAN_DIRECTORY=/path/to/project
+
+# TikTok Analytics
+TIKTOK_CLIENT_KEY=your_tiktok_app_client_key
+TIKTOK_CLIENT_SECRET=your_tiktok_app_client_secret
+TIKTOK_REDIRECT_URI=http://localhost:8080/tiktok/callback
+TIKTOK_TOKEN_ENCRYPTION_KEY=a_secure_random_secret_string
+TIKTOK_CALLBACK_HOST=0.0.0.0
+TIKTOK_CALLBACK_PORT=8080
+TIKTOK_LIVE_INTERVAL_SECONDS=300
 ```
 
-Never commit real credentials.
-
-### 3. Run the bot directly in Termux
+### 3. Run the Bot
 
 ```bash
-cd /sdcard/Projects/RobloxBot
 python bot.py
 ```
 
-No Ubuntu.
-No proot-distro.
-No special Python interpreter.
+---
 
-## Configuration reference
+## Configuration Reference
 
-| Variable | Required | Default | Purpose |
+| Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `DISCORD_TOKEN` | yes | — | Bot token |
-| `GEMINI_API_KEY` | for `/scan` | — | Gemini API key |
-| `GEMINI_MODEL` | no | `gemini-3.5-flash` | Primary Gemini model name |
-| `GEMINI_FALLBACK_MODEL` | no | `gemini-3.5-flash-lite` | Fallback Gemini model name |
-| `SCAN_DIRECTORY` | for `/scan` | — | Directory to scan |
-| `REPORT_CHANNEL_ID` | for `/scan` | — | Channel that receives reports |
-| `SCAN_MAX_FILE_BYTES` | no | `200000` | Max size of one file |
-| `SCAN_MAX_FILES` | no | `250` | Max files per scan |
-| `SCAN_MAX_TOTAL_BYTES` | no | `800000` | Max total source bytes per scan |
-| `SCAN_MAX_BYTES_PER_CHUNK` | no | `180000` | Size of one Gemini request |
-| `SCAN_MAX_CHUNKS` | no | `8` | Max Gemini requests per scan |
-| `GEMINI_TIMEOUT_SECONDS` | no | `180` | Per-request timeout |
+| `DISCORD_TOKEN` | Yes | — | Discord Bot Token |
+| `GEMINI_API_KEY` | For `/scan` | — | Google Gemini API Key |
+| `SCAN_DIRECTORY` | For `/scan` | — | Path to source code directory |
+| `REPORT_CHANNEL_ID` | For `/scan` | — | Discord channel ID for scan reports |
+| `TIKTOK_CLIENT_KEY` | For TikTok | — | TikTok App Client Key |
+| `TIKTOK_CLIENT_SECRET` | For TikTok | — | TikTok App Client Secret |
+| `TIKTOK_REDIRECT_URI` | For TikTok | `http://localhost:8080/tiktok/callback` | OAuth Redirect URI configured in TikTok Developer Portal |
+| `TIKTOK_TOKEN_ENCRYPTION_KEY` | Recommended | — | Server secret key for encrypting tokens at rest |
+| `TIKTOK_CALLBACK_HOST` | No | `0.0.0.0` | OAuth callback server host |
+| `TIKTOK_CALLBACK_PORT` | No | `8080` | OAuth callback server port |
+| `TIKTOK_LIVE_INTERVAL_SECONDS` | No | `300` | Background update interval for live TikTok embeds (seconds) |

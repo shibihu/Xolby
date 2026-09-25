@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 
 from services.db import db
 from services.roblox import roblox_cache, get_top_games
+from services.tiktok_analytics import TikTokLiveManager
+from services.tiktok_oauth import TikTokOAuthServer
 
 load_dotenv()
 
@@ -170,6 +172,8 @@ class PopularGamesBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.start_time = datetime.datetime.now(datetime.timezone.utc)
         self.live_tracker_manager = LiveTrackerManager(self)
+        self.tiktok_oauth_server = TikTokOAuthServer()
+        self.tiktok_live_manager = TikTokLiveManager(self)
 
         # Register /populargames directly on self.tree in __init__
         @self.tree.command(name="populargames", description="Show the current Roblox Top 20 games by active players.")
@@ -224,11 +228,19 @@ class PopularGamesBot(commands.Bot):
         self.live_tracker_manager.start()
         self.live_tracker_manager.load_trackers_from_db()
 
+        # Start TikTok OAuth callback server & live tracker manager
+        try:
+            await self.tiktok_oauth_server.start()
+        except Exception as exc:
+            log.warning("[TIKTOK OAUTH] Could not start callback server: %s", exc)
+        self.tiktok_live_manager.start()
+
         extensions = [
             "commands.clear",
             "commands.info",
             "commands.moderation",
             "commands.scan",
+            "commands.tiktok",
             "commands.utility",
         ]
 
@@ -263,7 +275,8 @@ class PopularGamesBot(commands.Bot):
             "clear", "populargames", "scan",
             "purge", "slowmode", "lock", "unlock", "kick", "ban", "unban", "timeout", "warn", "warnings",
             "serverinfo", "userinfo", "roleinfo", "channelinfo", "avatar", "roles", "channels", "membercount",
-            "ping", "uptime", "botinfo", "help", "invite", "timestamp", "poll", "remind"
+            "ping", "uptime", "botinfo", "help", "invite", "timestamp", "poll", "remind",
+            "tiktokconnect", "tiktokstats", "tiktoklive", "tiktokhistory", "tiktokdisconnect"
         }
         missing_commands = sorted(expected_commands - set(registered_cmds))
         if missing_commands:
@@ -289,6 +302,8 @@ class PopularGamesBot(commands.Bot):
             log.info("[SYNC] Mode: GLOBAL | Synced: %d", len(synced))
 
     async def close(self):
+        await self.tiktok_live_manager.stop()
+        await self.tiktok_oauth_server.stop()
         await self.live_tracker_manager.stop()
         await roblox_cache.stop()
         await super().close()
