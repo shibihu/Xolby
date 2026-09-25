@@ -4,3 +4,4 @@ python-dotenv>=1.0,<2
 cryptography>=42.0,<51
 fastapi
 jinja2
+uvicorn
