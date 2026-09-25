@@ -17,7 +17,9 @@ from services.tiktok import (
     OFFICIAL_SCOPES,
     TIKTOK_AUTH_URL,
     TikTokAPIClient,
+    TikTokSecurityError,
     encrypt_token,
+    is_encryption_available,
 )
 
 log = logging.getLogger(__name__)
@@ -89,6 +91,20 @@ class TikTokOAuthServer:
         self._site: Optional[web.TCPSite] = None
 
     async def handle_callback(self, request: web.Request) -> web.Response:
+        if not is_encryption_available():
+            html = """
+            <!DOCTYPE html>
+            <html>
+            <head><title>Security Error</title></head>
+            <body style="font-family: system-ui, sans-serif; background: #1e1e2e; color: #f5e0dc; text-align: center; padding: 50px;">
+                <h2 style="color: #f38ba8;">⚠️ Secure Token Storage Unavailable</h2>
+                <p>TikTok connection cannot be completed because secure token encryption is unavailable in this environment.</p>
+                <p>No access or refresh tokens were saved.</p>
+            </body>
+            </html>
+            """
+            return web.Response(text=html, content_type="text/html", status=500)
+
         code = request.query.get("code")
         state = request.query.get("state")
         error = request.query.get("error")
@@ -156,7 +172,7 @@ class TikTokOAuthServer:
             except Exception as exc:
                 log.warning("Could not fetch display name: %s", type(exc).__name__)
 
-            # Encrypt tokens before storing
+            # Encrypt tokens before storing (raises TikTokSecurityError if encryption fails)
             enc_access = encrypt_token(access_token)
             enc_refresh = encrypt_token(refresh_token) if refresh_token else None
 
@@ -207,6 +223,19 @@ class TikTokOAuthServer:
             """
             return web.Response(text=html, content_type="text/html", status=200)
 
+        except TikTokSecurityError as sec_err:
+            log.error("TikTok OAuth security error: %s", sec_err)
+            html = """
+            <!DOCTYPE html>
+            <html>
+            <head><title>Security Error</title></head>
+            <body style="font-family: system-ui, sans-serif; background: #1e1e2e; color: #f5e0dc; text-align: center; padding: 50px;">
+                <h2 style="color: #f38ba8;">⚠️ Secure Storage Error</h2>
+                <p>Secure token encryption failed. No credentials were stored.</p>
+            </body>
+            </html>
+            """
+            return web.Response(text=html, content_type="text/html", status=500)
         except Exception as exc:
             log.exception("Error during OAuth callback token exchange")
             html = """
@@ -225,7 +254,6 @@ class TikTokOAuthServer:
     async def start(self) -> None:
         """Start the callback HTTP server."""
         app = web.Application()
-        # Handle callback at /tiktok/callback or root callback path if needed
         app.router.add_get("/tiktok/callback", self.handle_callback)
         app.router.add_get("/", self.handle_callback)
 
