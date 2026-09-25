@@ -7,7 +7,7 @@ A comprehensive Discord slash-command bot written in Python with `discord.py` th
 - 🎵 **TikTok Analytics System** (`/tiktokconnect`, `/tiktokstats`, `/tiktoklive`, `/tiktokhistory`, `/tiktokdisconnect`) — Official TikTok API integration for user video metrics, calculated engagement, growth tracking, historical charts, and persistent live embeds
 - 🛡️ **Moderation & Utility** — Full suite of moderation, server info, and utility commands (`/kick`, `/ban`, `/warn`, `/clear`, `/serverinfo`, `/remind`, `/poll`, etc.)
 
-All features run natively in a standard Python 3.10+ environment, including Termux on Android, Linux, macOS, and Windows.
+All features run natively in Python 3.10+, including Termux on Android ARM64 (Python 3.14), Linux, macOS, and Windows.
 
 ---
 
@@ -20,7 +20,7 @@ All features run natively in a standard Python 3.10+ environment, including Term
 | `/tiktokconnect` | TikTok Analytics | Secure official OAuth connection link for TikTok |
 | `/tiktokstats` | TikTok Analytics | View metrics and engagement rates for your latest TikTok video |
 | `/tiktoklive` | TikTok Analytics | Persistent live-updating analytics message in current channel |
-| `/tiktokhistory` | TikTok Analytics | Performance history list and generated growth chart image |
+| `/tiktokhistory` | TikTok Analytics | Performance history list and pure Python generated growth chart PNG |
 | `/tiktokdisconnect` | TikTok Analytics | Disconnect account, revoke tokens, and delete saved credentials |
 | `/clear`, `/purge` | Moderation | Purge messages in channel |
 | `/kick`, `/ban`, `/unban`, `/timeout` | Moderation | User moderation actions |
@@ -40,13 +40,18 @@ User → /tiktokconnect → Official TikTok OAuth → Redirect Web Callback Serv
                                                        ↓
 TikTok Display API v2 ← Centralized Analytics Cache ← TikTokLiveManager Async Loop
                                                        ↓
-                                       Database Snapshots & Growth Chart
+                                  Database Snapshots & Pure Python Growth Chart PNG
                                                        ↓
                                           Persistent Discord Live Message
 ```
 
-### Official API Scopes & Metrics
+### Pure Python Lightweight Chart System
+Historical growth charts (`/tiktokhistory`) are generated using a custom pure-Python standard library PNG encoder (`struct`, `zlib`, `io`, `datetime`).
+- **No Native Dependencies**: Eliminates `matplotlib`, `cmake`, `ninja`, or C/C++ compilation requirements.
+- **Termux & Python 3.14 Ready**: Installs cleanly with `pip install -r requirements.txt` on Termux Android ARM64 without native build errors.
+- **Discord Mobile Optimized**: 16:9 dual-scale dark-themed chart displaying Views, Likes, Comments, and Shares over time.
 
+### Official API Scopes & Metrics
 Uses TikTok's official Display API v2:
 - **Scopes**: `user.info.basic`, `video.list`
 - **Supported API Metrics**: Views, Likes, Comments, Shares, Favorites (where available), Title, Cover Thumbnail, Posted Time, Video URL.
@@ -59,7 +64,7 @@ Uses TikTok's official Display API v2:
 
 ### Security Guarantees
 - **No Password Storage**: Never asks for or stores TikTok passwords.
-- **Token Encryption**: Access and refresh tokens are encrypted at rest using Fernet encryption (`TIKTOK_TOKEN_ENCRYPTION_KEY`).
+- **Token Encryption**: Access and refresh tokens are encrypted at rest using Fernet encryption (`cryptography`).
 - **No Token Logging**: Tokens and client secrets are never printed in logs, embeds, or exception messages.
 
 ---

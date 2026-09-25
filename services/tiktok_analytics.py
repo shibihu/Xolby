@@ -1,4 +1,6 @@
-"""TikTok Analytics caching, historical graph rendering, and background live tracker manager."""
+"""TikTok Analytics caching, historical graph rendering using pure Python standard library,
+and background live tracker manager.
+"""
 
 from __future__ import annotations
 
@@ -6,15 +8,14 @@ import asyncio
 import datetime
 import io
 import logging
+import math
 import os
+import struct
 import time
+import zlib
 from typing import Any, Optional
 import discord
 from discord.ext import commands
-import matplotlib
-matplotlib.use("Agg")  # Non-interactive backend
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 
 from services.db import TikTokSnapshotRecord, db
 from services.tiktok import (
@@ -28,6 +29,167 @@ from services.tiktok import (
 log = logging.getLogger(__name__)
 
 CACHE_TTL_SECONDS = 180.0  # 3 minutes
+
+# ---------------------------------------------------------------------------
+# Pure Python 5x7 ASCII Bitmap Font for Label Rendering
+# ---------------------------------------------------------------------------
+FONT_5X7: dict[str, list[int]] = {
+    '0': [0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E],
+    '1': [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E],
+    '2': [0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F],
+    '3': [0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E],
+    '4': [0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02],
+    '5': [0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E],
+    '6': [0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E],
+    '7': [0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
+    '8': [0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E],
+    '9': [0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C],
+    ':': [0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x0C, 0x00],
+    '/': [0x01, 0x02, 0x04, 0x08, 0x10, 0x00, 0x00],
+    '.': [0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x00],
+    '-': [0x00, 0x00, 0x1F, 0x00, 0x00, 0x00, 0x00],
+    '+': [0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00],
+    ' ': [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+    'A': [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+    'B': [0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E],
+    'C': [0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E],
+    'D': [0x1C, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1C],
+    'E': [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F],
+    'F': [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10],
+    'G': [0x0E, 0x11, 0x10, 0x13, 0x11, 0x11, 0x0F],
+    'H': [0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+    'I': [0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],
+    'J': [0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C],
+    'K': [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+    'L': [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F],
+    'M': [0x11, 0x1B, 0x15, 0x11, 0x11, 0x11, 0x11],
+    'N': [0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11],
+    'O': [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+    'P': [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10],
+    'Q': [0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D],
+    'R': [0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11],
+    'S': [0x0E, 0x11, 0x10, 0x0E, 0x01, 0x11, 0x0E],
+    'T': [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+    'U': [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+    'V': [0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04],
+    'W': [0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11],
+    'X': [0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11],
+    'Y': [0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04],
+    'Z': [0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F],
+    'a': [0x00, 0x00, 0x0E, 0x01, 0x0F, 0x11, 0x0F],
+    'b': [0x10, 0x10, 0x16, 0x19, 0x11, 0x11, 0x1E],
+    'c': [0x00, 0x00, 0x0E, 0x10, 0x10, 0x11, 0x0E],
+    'd': [0x01, 0x01, 0x0D, 0x13, 0x11, 0x11, 0x0F],
+    'e': [0x00, 0x00, 0x0E, 0x11, 0x1F, 0x10, 0x0E],
+    'i': [0x04, 0x00, 0x0C, 0x04, 0x04, 0x04, 0x0E],
+    'k': [0x10, 0x10, 0x12, 0x14, 0x18, 0x14, 0x12],
+    'l': [0x0C, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],
+    'm': [0x00, 0x00, 0x1A, 0x15, 0x15, 0x11, 0x11],
+    'n': [0x00, 0x00, 0x16, 0x19, 0x11, 0x11, 0x11],
+    'o': [0x00, 0x00, 0x0E, 0x11, 0x11, 0x11, 0x0E],
+    'p': [0x00, 0x00, 0x1E, 0x11, 0x1E, 0x10, 0x10],
+    'r': [0x00, 0x00, 0x16, 0x19, 0x10, 0x10, 0x10],
+    's': [0x00, 0x00, 0x0E, 0x10, 0x0E, 0x01, 0x1E],
+    't': [0x08, 0x08, 0x1C, 0x08, 0x08, 0x09, 0x06],
+    'u': [0x00, 0x00, 0x11, 0x11, 0x11, 0x13, 0x0D],
+    'v': [0x00, 0x00, 0x11, 0x11, 0x11, 0x0A, 0x04],
+    'w': [0x00, 0x00, 0x11, 0x11, 0x15, 0x15, 0x0A],
+    'y': [0x00, 0x00, 0x11, 0x11, 0x0F, 0x01, 0x0E],
+    'M': [0x11, 0x1B, 0x15, 0x11, 0x11, 0x11, 0x11],
+    'K': [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+    '%': [0x19, 0x1A, 0x04, 0x08, 0x13, 0x13, 0x00],
+}
+
+
+class PureCanvas:
+    """Pure Python RGBA Canvas and PNG Encoder using standard zlib and struct."""
+
+    def __init__(self, width: int = 640, height: int = 360, bg_color=(0x1E, 0x1E, 0x2E, 0xFF)):
+        self.width = width
+        self.height = height
+        self.pixels = bytearray(width * height * 4)
+        self.clear(bg_color)
+
+    def clear(self, color: tuple[int, int, int, int]):
+        r, g, b, a = color
+        px = bytes([r, g, b, a]) * (self.width * self.height)
+        self.pixels[:] = px
+
+    def set_pixel(self, x: int, y: int, color: tuple[int, int, int, int]):
+        if 0 <= x < self.width and 0 <= y < self.height:
+            idx = (y * self.width + x) * 4
+            self.pixels[idx:idx+4] = bytes(color)
+
+    def draw_filled_rect(self, x0: int, y0: int, x1: int, y1: int, color: tuple[int, int, int, int]):
+        min_x, max_x = max(0, min(x0, x1)), min(self.width - 1, max(x0, x1))
+        min_y, max_y = max(0, min(y0, y1)), min(self.height - 1, max(y0, y1))
+        px = bytes(color)
+        for y in range(min_y, max_y + 1):
+            row_idx = y * self.width * 4
+            for x in range(min_x, max_x + 1):
+                idx = row_idx + x * 4
+                self.pixels[idx:idx+4] = px
+
+    def draw_line(self, x0: int, y0: int, x1: int, y1: int, color: tuple[int, int, int, int], thickness: int = 1):
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+
+        x, y = x0, y0
+        half_t = thickness // 2
+        while True:
+            for tx in range(-half_t, half_t + 1):
+                for ty in range(-half_t, half_t + 1):
+                    self.set_pixel(x + tx, y + ty, color)
+
+            if x == x1 and y == y1:
+                break
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += sx
+            if e2 < dx:
+                err += dx
+                y += sy
+
+    def draw_text(self, x: int, y: int, text: str, color: tuple[int, int, int, int], scale: int = 1):
+        curr_x = x
+        for ch in text:
+            bitmap = FONT_5X7.get(ch, FONT_5X7.get(' '))
+            for row_idx, row_byte in enumerate(bitmap):
+                for col_idx in range(5):
+                    if (row_byte >> (4 - col_idx)) & 1:
+                        px_x = curr_x + col_idx * scale
+                        px_y = y + row_idx * scale
+                        if scale == 1:
+                            self.set_pixel(px_x, px_y, color)
+                        else:
+                            self.draw_filled_rect(px_x, px_y, px_x + scale - 1, px_y + scale - 1, color)
+            curr_x += (5 * scale) + (1 * scale)
+
+    def to_png_bytes(self) -> bytes:
+        raw_data = bytearray()
+        stride = self.width * 4
+        for y in range(self.height):
+            raw_data.append(0)  # Filter type 0
+            idx = y * stride
+            raw_data.extend(self.pixels[idx:idx+stride])
+
+        compressed = zlib.compress(bytes(raw_data), level=9)
+
+        png = bytearray(b"\x89PNG\r\n\x1a\n")
+        ihdr_data = struct.pack(">IIBBBBB", self.width, self.height, 8, 6, 0, 0, 0)
+        png.extend(self._make_chunk(b"IHDR", ihdr_data))
+        png.extend(self._make_chunk(b"IDAT", compressed))
+        png.extend(self._make_chunk(b"IEND", b""))
+        return bytes(png)
+
+    def _make_chunk(self, chunk_type: bytes, data: bytes) -> bytes:
+        length = struct.pack(">I", len(data))
+        crc = struct.pack(">I", zlib.crc32(chunk_type + data) & 0xFFFFFFFF)
+        return length + chunk_type + data + crc
 
 
 # ---------------------------------------------------------------------------
@@ -106,10 +268,19 @@ tiktok_cache = TikTokAnalyticsCache()
 
 
 # ---------------------------------------------------------------------------
-# Chart Generation
+# Pure Python Chart Generation (No Native/C Dependencies)
 # ---------------------------------------------------------------------------
+def _format_num(n: float) -> str:
+    """Format large numbers with K / M suffixes for chart labels."""
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n/1_000:.1f}K"
+    return str(int(n))
+
+
 def generate_history_chart(snapshots: list[TikTokSnapshotRecord]) -> Optional[io.BytesIO]:
-    """Generate a mobile-friendly matplotlib chart PNG from snapshot records."""
+    """Generate a mobile-friendly PNG chart using pure Python standard library."""
     if not snapshots or len(snapshots) < 2:
         return None
 
@@ -133,43 +304,126 @@ def generate_history_chart(snapshots: list[TikTokSnapshotRecord]) -> Optional[io
         comments.append(s.comment_count)
         shares.append(s.share_count)
 
-    if len(timestamps) < 2:
+    n_points = len(timestamps)
+    if n_points < 2:
         return None
 
-    plt.style.use("dark_background")
-    fig, ax1 = plt.subplots(figsize=(8, 4.5), dpi=120)
-    fig.patch.set_facecolor("#1e1e2e")
-    ax1.set_facecolor("#181825")
+    # Canvas dimensions
+    width, height = 640, 360
+    canvas = PureCanvas(width=width, height=height, bg_color=(0x1E, 0x1E, 0x2E, 0xFF))
 
-    # Plot Views on primary Y-axis
-    line1 = ax1.plot(timestamps, views, color="#38bdf8", linewidth=2.5, marker="o", markersize=4, label="Views")
-    ax1.set_ylabel("Views", color="#38bdf8", fontsize=11, fontweight="bold")
-    ax1.tick_params(axis="y", labelcolor="#38bdf8")
-    ax1.grid(True, linestyle="--", alpha=0.2, color="#6c7086")
+    # Colors
+    c_card_bg = (0x18, 0x18, 0x25, 0xFF)
+    c_grid = (0x31, 0x32, 0x44, 0xFF)
+    c_border = (0x45, 0x47, 0x5A, 0xFF)
+    c_text = (0xCD, 0xD6, 0xF4, 0xFF)
+    c_subtext = (0xA6, 0xAD, 0xC8, 0xFF)
 
-    # Plot Likes, Comments, Shares on secondary Y-axis for better visibility scale
-    ax2 = ax1.twinx()
-    line2 = ax2.plot(timestamps, likes, color="#f43f5e", linewidth=2, linestyle="-", marker="s", markersize=3, label="Likes")
-    line3 = ax2.plot(timestamps, comments, color="#34d399", linewidth=2, linestyle="--", marker="^", markersize=3, label="Comments")
-    line4 = ax2.plot(timestamps, shares, color="#fbbf24", linewidth=2, linestyle=":", marker="d", markersize=3, label="Shares")
-    ax2.set_ylabel("Interactions", color="#cdd6f4", fontsize=11)
-    ax2.tick_params(axis="y", labelcolor="#cdd6f4")
+    c_views = (0x38, 0xBD, 0xF8, 0xFF)      # Sky Blue
+    c_likes = (0xF4, 0x3F, 0x5E, 0xFF)      # Rose Red
+    c_comments = (0x34, 0xD3, 0x99, 0xFF)   # Emerald Green
+    c_shares = (0xFB, 0xBF, 0x24, 0xFF)     # Amber Yellow
 
-    # Format X axis dates
-    ax1.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
-    fig.autofmt_xdate(rotation=25)
+    # Card area
+    x0, y0 = 65, 50
+    x1, y1 = 570, 290
+    canvas.draw_filled_rect(x0, y0, x1, y1, c_card_bg)
+    canvas.draw_filled_rect(x0, y0, x1, y0 + 1, c_border)
+    canvas.draw_filled_rect(x0, y1, x1, y1 + 1, c_border)
+    canvas.draw_filled_rect(x0, y0, x0 + 1, y1, c_border)
+    canvas.draw_filled_rect(x1, y0, x1 + 1, y1, c_border)
 
-    # Combine legends
-    lines = line1 + line2 + line3 + line4
-    labels = [l.get_label() for l in lines]
-    ax1.legend(lines, labels, loc="upper left", facecolor="#11111b", edgecolor="#45475a", fontsize=9)
+    # Title
+    canvas.draw_text(x=20, y=18, text="TikTok Analytics History", color=c_text, scale=2)
 
-    plt.title("TikTok Analytics History", fontsize=13, fontweight="bold", color="#cdd6f4", pad=12)
-    plt.tight_layout()
+    # Legend at Top Right
+    leg_x = 340
+    leg_y = 22
+    # Views legend key
+    canvas.draw_filled_rect(leg_x, leg_y, leg_x + 8, leg_y + 8, c_views)
+    canvas.draw_text(leg_x + 12, leg_y + 1, "Views", c_subtext)
+    # Likes legend key
+    canvas.draw_filled_rect(leg_x + 65, leg_y, leg_x + 73, leg_y + 8, c_likes)
+    canvas.draw_text(leg_x + 77, leg_y + 1, "Likes", c_subtext)
+    # Comments legend key
+    canvas.draw_filled_rect(leg_x + 130, leg_y, leg_x + 138, leg_y + 8, c_comments)
+    canvas.draw_text(leg_x + 142, leg_y + 1, "Comments", c_subtext)
+    # Shares legend key
+    canvas.draw_filled_rect(leg_x + 195, leg_y, leg_x + 203, leg_y + 8, c_shares)
+    canvas.draw_text(leg_x + 207, leg_y + 1, "Shares", c_subtext)
 
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", facecolor=fig.get_facecolor(), edgecolor="none", bbox_inches="tight")
-    plt.close(fig)
+    # Value ranges for scaling
+    max_v = max(max(views), 1)
+    min_v = min(views)
+    range_v = max(max_v - min_v, 1)
+
+    max_inter = max(max(likes + comments + shares), 1)
+    min_inter = min(likes + comments + shares)
+    range_inter = max(max_inter - min_inter, 1)
+
+    # Gridlines and Y-axis labels
+    n_grid = 4
+    for i in range(n_grid + 1):
+        grid_y = y1 - int(i * (y1 - y0) / n_grid)
+        canvas.draw_line(x0, grid_y, x1, grid_y, c_grid, thickness=1)
+
+        # Left Y label (Views)
+        v_val = min_v + (i * range_v / n_grid)
+        v_label = _format_num(v_val)
+        canvas.draw_text(x0 - 5 - (len(v_label) * 6), grid_y - 3, v_label, c_views)
+
+        # Right Y label (Interactions)
+        inter_val = min_inter + (i * range_inter / n_grid)
+        inter_label = _format_num(inter_val)
+        canvas.draw_text(x1 + 6, grid_y - 3, inter_label, c_subtext)
+
+    # X-axis time labels
+    step_x = (x1 - x0) / (n_points - 1)
+    pts_v = []
+    pts_likes = []
+    pts_comments = []
+    pts_shares = []
+
+    for idx, (dt, v, l, c, s) in enumerate(zip(timestamps, views, likes, comments, shares)):
+        px = int(x0 + idx * step_x)
+        # Views Y
+        py_v = int(y1 - ((v - min_v) / range_v) * (y1 - y0 - 10))
+        pts_v.append((px, py_v))
+
+        # Likes Y
+        py_l = int(y1 - ((l - min_inter) / range_inter) * (y1 - y0 - 10))
+        pts_likes.append((px, py_l))
+
+        # Comments Y
+        py_c = int(y1 - ((c - min_inter) / range_inter) * (y1 - y0 - 10))
+        pts_comments.append((px, py_c))
+
+        # Shares Y
+        py_s = int(y1 - ((s - min_inter) / range_inter) * (y1 - y0 - 10))
+        pts_shares.append((px, py_s))
+
+        # Time tick label at intervals
+        if idx == 0 or idx == n_points - 1 or idx == n_points // 2:
+            time_str = dt.strftime("%m/%d %H:%M")
+            lbl_x = max(x0, min(px - 25, x1 - 50))
+            canvas.draw_text(lbl_x, y1 + 8, time_str, c_subtext)
+
+    # Plot trend lines and data markers
+    def draw_series(pts, color, thickness=2, marker_type="square"):
+        for i in range(len(pts) - 1):
+            canvas.draw_line(pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1], color, thickness=thickness)
+        for px, py in pts:
+            if marker_type == "square":
+                canvas.draw_filled_rect(px - 2, py - 2, px + 2, py + 2, color)
+            else:
+                canvas.draw_filled_rect(px - 3, py - 3, px + 3, py + 3, color)
+
+    draw_series(pts_v, c_views, thickness=3, marker_type="box")
+    draw_series(pts_likes, c_likes, thickness=2, marker_type="square")
+    draw_series(pts_comments, c_comments, thickness=2, marker_type="square")
+    draw_series(pts_shares, c_shares, thickness=2, marker_type="square")
+
+    buf = io.BytesIO(canvas.to_png_bytes())
     buf.seek(0)
     return buf
 
