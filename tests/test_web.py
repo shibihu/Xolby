@@ -61,6 +61,15 @@ class TestWebPages(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok"})
 
+    def test_tiktok_verification_file_at_root(self):
+        response = self.client.get("/tiktokTVlLSfjHhXWMgbEQjvEpyh4YbwTrbCsU.txt")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.text.strip(),
+            "tiktok-developers-site-verification=TVlLSfjHhXWMgbEQjvEpyh4YbwTrbCsU",
+        )
+        self.assertIn("text/plain", response.headers.get("content-type", ""))
+
     def test_oauth_entry_page_points_to_discord(self):
         response = self.client.get("/oauth/tiktok")
         self.assertEqual(response.status_code, 200)

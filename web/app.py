@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from web.routes import home, privacy, terms, tiktok_oauth
+from web.routes import home, privacy, terms, tiktok_oauth, tiktok_verification
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +23,7 @@ app.include_router(home.router)
 app.include_router(privacy.router)
 app.include_router(terms.router)
 app.include_router(tiktok_oauth.router)
+app.include_router(tiktok_verification.router)
 
 
 @app.get("/health")
