@@ -7,8 +7,8 @@ from fastapi.responses import PlainTextResponse
 router = APIRouter()
 log = logging.getLogger("web.tiktok_verification")
 
-VERIFICATION_FILENAME = "tiktokTVlLSfjHhXWMgbEQjvEpyh4YbwTrbCsU.txt"
-VERIFICATION_CONTENT = "tiktok-developers-site-verification=TVlLSfjHhXWMgbEQjvEpyh4YbwTrbCsU"
+VERIFICATION_FILENAME = "tiktokwVtAGGjV61utxKvtT5HcHCXtGSNUGZ67.txt"
+VERIFICATION_CONTENT = "tiktok-developers-site-verification=wVtAGGjV61utxKvtT5HcHCXtGSNUGZ67"
 # Repository root: web/routes/<this file> -> parents[2]
 _VERIFICATION_FILE = Path(__file__).resolve().parents[2] / VERIFICATION_FILENAME
 
