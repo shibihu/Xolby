@@ -11,11 +11,15 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
+# Load .env BEFORE importing services that read environment variables.
+# Some service modules create environment-dependent singletons at import time
+# (e.g. services.web_backend.web_backend reads XOLBY_WEB_BASE_URL /
+# XOLBY_WEB_API_KEY, and services.roblox reads ROBLOX_SESSION_ID).
+load_dotenv()
+
 from services.db import db
 from services.roblox import roblox_cache, get_top_games
 from services.tiktok_analytics import TikTokLiveManager
-
-load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
