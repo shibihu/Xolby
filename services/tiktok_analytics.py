@@ -20,10 +20,12 @@ from discord.ext import commands
 from services.db import TikTokSnapshotRecord, db
 from services.tiktok import (
     UNAVAILABLE_STUDIO_METRICS,
-    TikTokAPIClient,
-    TikTokTokenExpiredError,
     calculate_engagement_metrics,
-    get_valid_access_token,
+)
+from services.web_backend import (
+    WebBackendAuthError,
+    WebBackendError,
+    web_backend,
 )
 
 log = logging.getLogger(__name__)
@@ -194,7 +196,12 @@ class PureCanvas:
 # Centralized Analytics Cache
 # ---------------------------------------------------------------------------
 class TikTokAnalyticsCache:
-    """Centralized async cache to prevent redundant TikTok API calls."""
+    """Centralized async cache in front of the Render TikTok backend.
+
+    The bot never calls the TikTok API directly and never touches TikTok
+    access/refresh tokens: analytics are fetched from the authenticated Xolby
+    web backend, which decrypts credentials server-side.
+    """
 
     def __init__(self) -> None:
         self._cache: dict[int, dict[str, Any]] = {}  # user_id -> {timestamp, videos, account, status}
@@ -203,7 +210,6 @@ class TikTokAnalyticsCache:
     async def get_user_analytics(
         self,
         discord_user_id: int,
-        api_client: Optional[TikTokAPIClient] = None,
         force_refresh: bool = False,
     ) -> dict[str, Any]:
         async with self._lock:
@@ -212,54 +218,72 @@ class TikTokAnalyticsCache:
             if not force_refresh and cached and (now - cached["timestamp"] < CACHE_TTL_SECONDS):
                 return cached
 
-            client = api_client or TikTokAPIClient()
-            access_token, account = await get_valid_access_token(discord_user_id, client)
-
-            if not account:
-                res = {"status": "not_connected", "videos": [], "account": None, "timestamp": now}
-                self._cache[discord_user_id] = res
-                return res
-
-            if not access_token:
-                res = {"status": "reconnect_required", "videos": [], "account": account, "timestamp": now}
-                self._cache[discord_user_id] = res
-                return res
-
             try:
-                videos = await client.get_user_videos(access_token, max_count=10)
-                if videos:
-                    # Save snapshot for latest video
-                    latest = videos[0]
-                    v_id = str(latest.get("id", ""))
-                    v_title = latest.get("title") or latest.get("video_description") or "Untitled Video"
-                    db.add_tiktok_snapshot(
-                        discord_user_id=discord_user_id,
-                        tiktok_open_id=account.tiktok_open_id,
-                        video_id=v_id,
-                        video_title=v_title,
-                        view_count=int(latest.get("view_count", 0)),
-                        like_count=int(latest.get("like_count", 0)),
-                        comment_count=int(latest.get("comment_count", 0)),
-                        share_count=int(latest.get("share_count", 0)),
-                        favorite_count=int(latest.get("favorite_count", 0)),
-                    )
-
-                res = {"status": "ok", "videos": videos, "account": account, "timestamp": now}
+                data = await web_backend.get_analytics(discord_user_id)
+            except WebBackendAuthError:
+                log.error("Xolby web backend rejected the bot API key for TikTok analytics.")
+                res = {
+                    "status": "error",
+                    "videos": [],
+                    "account": None,
+                    "timestamp": now,
+                    "message": "Backend authentication failed.",
+                }
                 self._cache[discord_user_id] = res
                 return res
-
-            except TikTokTokenExpiredError:
-                res = {"status": "reconnect_required", "videos": [], "account": account, "timestamp": now}
-                self._cache[discord_user_id] = res
-                return res
-            except Exception as exc:
-                log.warning("Failed to refresh TikTok analytics for user %s: %s", discord_user_id, type(exc).__name__)
+            except WebBackendError as exc:
+                log.warning(
+                    "Xolby web backend unavailable for TikTok analytics: %s",
+                    type(exc).__name__,
+                )
                 if cached:
-                    cached["status"] = "offline_cached"
-                    return cached
-                res = {"status": "error", "error": str(exc), "videos": [], "account": account, "timestamp": now}
+                    fallback = dict(cached)
+                    fallback["status"] = "offline_cached"
+                    fallback["timestamp"] = now
+                    self._cache[discord_user_id] = fallback
+                    return fallback
+                res = {"status": "error", "videos": [], "account": None, "timestamp": now}
                 self._cache[discord_user_id] = res
                 return res
+
+            status = data.get("status") or "error"
+            videos = data.get("videos") or []
+            account = data.get("account")
+
+            if status == "ok" and videos:
+                # Persist a local snapshot so chart/history features keep working.
+                self._record_snapshot(discord_user_id, account, videos[0])
+
+            res: dict[str, Any] = {
+                "status": status,
+                "videos": videos,
+                "account": account,
+                "timestamp": now,
+            }
+            if data.get("message"):
+                res["message"] = data["message"]
+            self._cache[discord_user_id] = res
+            return res
+
+    @staticmethod
+    def _record_snapshot(discord_user_id: int, account: Any, video: dict[str, Any]) -> None:
+        v_id = str(video.get("id", ""))
+        v_title = video.get("title") or video.get("video_description") or "Untitled Video"
+        open_id = getattr(account, "tiktok_open_id", "") or ""
+        try:
+            db.add_tiktok_snapshot(
+                discord_user_id=discord_user_id,
+                tiktok_open_id=open_id,
+                video_id=v_id,
+                video_title=v_title,
+                view_count=int(video.get("view_count", 0)),
+                like_count=int(video.get("like_count", 0)),
+                comment_count=int(video.get("comment_count", 0)),
+                share_count=int(video.get("share_count", 0)),
+                favorite_count=int(video.get("favorite_count", 0)),
+            )
+        except Exception as exc:  # noqa: BLE001 - snapshot is best-effort
+            log.warning("Failed to persist TikTok snapshot: %s", type(exc).__name__)
 
 
 tiktok_cache = TikTokAnalyticsCache()

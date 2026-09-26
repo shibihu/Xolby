@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import datetime
 import hashlib
 import logging
 import os
@@ -82,16 +81,30 @@ def is_encryption_available() -> bool:
     return IS_ENCRYPTION_AVAILABLE and Fernet is not None
 
 
+def get_encryption_secret() -> str:
+    """Return the configured token encryption secret (server-side only).
+
+    Prefers the project's established ``TIKTOK_TOKEN_ENCRYPTION_KEY`` and falls
+    back to ``TOKEN_ENCRYPTION_KEY``. There is deliberately no default: a
+    missing key must fail closed rather than silently use a weak/known secret.
+    """
+    return (
+        (os.getenv("TIKTOK_TOKEN_ENCRYPTION_KEY") or "").strip()
+        or (os.getenv("TOKEN_ENCRYPTION_KEY") or "").strip()
+    )
+
+
 def _get_fernet() -> Any:
-    """Derive a deterministic 32-byte Fernet key from environment secrets."""
+    """Derive a deterministic 32-byte Fernet key from the configured secret."""
     if not is_encryption_available():
         raise TikTokSecurityError("Secure token encryption is unavailable in this environment.")
 
-    secret = (
-        os.getenv("TIKTOK_TOKEN_ENCRYPTION_KEY")
-        or os.getenv("DISCORD_TOKEN")
-        or "default_xolby_tiktok_secret_key"
-    )
+    secret = get_encryption_secret()
+    if not secret:
+        raise TikTokSecurityError(
+            "TIKTOK_TOKEN_ENCRYPTION_KEY is not configured; refusing to store tokens."
+        )
+
     salt = b"xolby_tiktok_salt_v1"
     key_bytes = hashlib.pbkdf2_hmac("sha256", secret.encode("utf-8"), salt, 100_000)
     fernet_key = base64.urlsafe_b64encode(key_bytes)
@@ -380,59 +393,3 @@ class TikTokAPIClient:
             log.warning("Revoke token network error: %s", type(e).__name__)
             return False
 
-
-async def get_valid_access_token(
-    discord_user_id: int, api_client: Optional[TikTokAPIClient] = None
-) -> tuple[Optional[str], Optional[Any]]:
-    """Retrieve decrypted valid access token for user, refreshing automatically if expired."""
-    from services.db import db
-
-    account = db.get_tiktok_account(discord_user_id)
-    if not account:
-        return None, None
-
-    if not is_encryption_available():
-        log.warning("Encryption unavailable; cannot decrypt access token for user %s", discord_user_id)
-        return None, account
-
-    now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
-    try:
-        decrypted_access = decrypt_token(account.access_token)
-        decrypted_refresh = decrypt_token(account.refresh_token) if account.refresh_token else ""
-    except TikTokSecurityError:
-        log.error("Failed to decrypt tokens for user %s due to security error.", discord_user_id)
-        return None, account
-
-    # Check if access token is still valid (60s buffer)
-    if account.expires_at > now_ts + 60 and decrypted_access:
-        return decrypted_access, account
-
-    # Token is expired or expiring soon, try refreshing if refresh_token available
-    if decrypted_refresh and (not account.refresh_expires_at or account.refresh_expires_at > now_ts):
-        client = api_client or TikTokAPIClient()
-        try:
-            refresh_res = await client.refresh_access_token(decrypted_refresh)
-            new_access = refresh_res.get("access_token")
-            new_refresh = refresh_res.get("refresh_token") or decrypted_refresh
-            expires_in = refresh_res.get("expires_in", 86400)
-            refresh_expires_in = refresh_res.get("refresh_expires_in", 31536000)
-
-            if new_access:
-                enc_access = encrypt_token(new_access)
-                enc_refresh = encrypt_token(new_refresh)
-                updated_account = db.save_tiktok_account(
-                    discord_user_id=discord_user_id,
-                    tiktok_open_id=account.tiktok_open_id,
-                    display_name=account.display_name,
-                    access_token=enc_access,
-                    refresh_token=enc_refresh,
-                    expires_at=now_ts + expires_in,
-                    refresh_expires_at=now_ts + refresh_expires_in,
-                )
-                return new_access, updated_account
-        except TikTokTokenExpiredError:
-            log.warning("Refresh token expired for Discord user %s", discord_user_id)
-        except Exception as exc:
-            log.error("Error refreshing token for user %s: %s", discord_user_id, type(exc).__name__)
-
-    return None, account

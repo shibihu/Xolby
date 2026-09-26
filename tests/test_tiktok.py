@@ -1,31 +1,27 @@
-"""Automated unit tests for TikTok Analytics system in Xolby."""
+"""Automated unit tests for the TikTok Analytics system in Xolby.
 
-import asyncio
-import datetime
+These tests cover the bot-side pieces that remain on Termux: the local SQLite
+snapshot/tracker storage, chart rendering, embed building, and token encryption
+utilities used by the Render backend. OAuth state/flow tests live in
+``tests/test_web.py`` and ``tests/test_architecture.py``.
+"""
+
 import io
 import os
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 from services.db import Database, TikTokSnapshotRecord
 from services.tiktok import (
-    TikTokAPIClient,
-    TikTokRateLimitError,
-    TikTokTokenExpiredError,
     calculate_engagement_metrics,
     decrypt_token,
     encrypt_token,
-    get_valid_access_token,
+    is_encryption_available,
 )
 from services.tiktok_analytics import (
     build_tiktok_stats_embed,
     generate_history_chart,
-)
-from services.tiktok_oauth import (
-    build_authorization_url,
-    create_oauth_state,
-    verify_and_consume_state,
 )
 
 
@@ -80,7 +76,7 @@ class TestTikTokDatabase(unittest.TestCase):
         )
         self.assertEqual(snap1.view_count, 1000)
 
-        snap2 = self.db.add_tiktok_snapshot(
+        self.db.add_tiktok_snapshot(
             discord_user_id=user_id,
             tiktok_open_id="open_id_xyz",
             video_id="video_001",
@@ -100,62 +96,41 @@ class TestTikTokDatabase(unittest.TestCase):
         self.assertIsNotNone(prev)
         self.assertEqual(prev.view_count, 1000)
 
-    def test_live_tracker_crud(self):
+    def test_delete_account_clears_live_trackers(self):
         user_id = 998877
-        tracker = self.db.add_or_update_tiktok_live_tracker(
+        self.db.add_or_update_tiktok_live_tracker(
             discord_user_id=user_id,
             guild_id=11111,
             channel_id=22222,
             message_id=33333,
         )
-        self.assertEqual(tracker.channel_id, 22222)
-
-        active = self.db.get_active_tiktok_live_trackers()
-        self.assertEqual(len(active), 1)
-
-        self.db.deactivate_tiktok_live_tracker(22222)
-        active_after = self.db.get_active_tiktok_live_trackers()
-        self.assertEqual(len(active_after), 0)
-
-        self.db.remove_tiktok_live_tracker(22222)
+        self.db.delete_tiktok_account(user_id)
+        self.assertEqual(len(self.db.get_active_tiktok_live_trackers()), 0)
 
 
 class TestTikTokUtilities(unittest.TestCase):
-    def test_token_encryption(self):
-        raw_token = "act_secret_token_12345"
-        enc = encrypt_token(raw_token)
-        self.assertNotEqual(enc, raw_token)
-        dec = decrypt_token(enc)
-        self.assertEqual(dec, raw_token)
+    def test_token_encryption_when_available(self):
+        if not is_encryption_available():
+            self.skipTest("cryptography backend unavailable on this runner")
+        with patch.dict(
+            os.environ, {"TIKTOK_TOKEN_ENCRYPTION_KEY": "unit-test-secret-key"}
+        ):
+            raw_token = "act_secret_token_12345"
+            enc = encrypt_token(raw_token)
+            self.assertNotEqual(enc, raw_token)
+            dec = decrypt_token(enc)
+            self.assertEqual(dec, raw_token)
 
     def test_engagement_calculations(self):
-        # Zero views
         zero_res = calculate_engagement_metrics(0, 100, 10, 5, 2)
         self.assertEqual(zero_res["total_engagement_rate"], 0.0)
         self.assertEqual(zero_res["like_rate"], 0.0)
 
-        # Standard views
         res = calculate_engagement_metrics(10000, 800, 50, 100, 50)
-        # (800+50+100+50) / 10000 * 100 = 1000 / 10000 * 100 = 10.0
         self.assertEqual(res["total_engagement_rate"], 10.0)
         self.assertEqual(res["like_rate"], 8.0)
         self.assertEqual(res["comment_rate"], 0.5)
         self.assertEqual(res["share_rate"], 1.0)
-
-    def test_oauth_state(self):
-        user_id = 554433
-        state = create_oauth_state(user_id)
-        self.assertTrue(len(state) > 10)
-
-        auth_url = build_authorization_url(state)
-        self.assertIn("client_key", auth_url)
-        self.assertIn(state, auth_url)
-
-        consumed = verify_and_consume_state(state)
-        self.assertEqual(consumed, user_id)
-
-        # Re-consuming should fail
-        self.assertIsNone(verify_and_consume_state(state))
 
     def test_chart_generation(self):
         snaps = [

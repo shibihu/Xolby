@@ -1,0 +1,9 @@
+# Render web backend dependencies.
+#
+# Install this file (instead of requirements.txt) on the Render web service:
+#   pip install -r requirements-render.txt
+#
+# The Termux Discord bot does NOT need psycopg; it only talks to the backend
+# over HTTPS and keeps its local SQLite bot_data.db.
+-r requirements.txt
+psycopg[binary]>=3.1,<4

@@ -11,13 +11,74 @@ All features run natively in Python 3.10+, including Termux on Android ARM64 (Py
 
 ---
 
+## Architecture
+
+Xolby runs as **two cooperating processes**. TikTok OAuth is owned entirely by
+the web backend on Render; the Discord bot on Termux never handles TikTok
+secrets or tokens.
+
+```text
+Discord Bot (Termux)                    Xolby Web Backend (Render)                TikTok
+────────────────────                    ──────────────────────────                ──────
+/tiktokconnect
+      │  POST /api/tiktok/oauth/start
+      │  Authorization: Bearer <XOLBY_WEB_API_KEY>
+      ├────────────────────────────────▶  create single-use OAuth session/state
+      │                                   (stored in DATABASE_URL)
+      │◀────────────────────────────────  short-lived authorization URL
+      │
+   Discord button ───────────────────────────────────────────────────────────▶ TikTok authorize
+                                                                                     │
+                                    GET /oauth/tiktok/callback ◀──────────────────────┘
+                                            │  validate & consume state
+                                            │  exchange code with TikTok (client_secret stays here)
+                                            │  encrypt access/refresh tokens
+                                            │  persist credentials (DATABASE_URL)
+                                            ▼
+                                    ✅ "return to Discord" page
+
+/tiktokstats, /tiktoklive, /tiktokhistory
+      │  GET /api/tiktok/videos/{discord_user_id}   (Bearer auth)
+      ├────────────────────────────────▶  decrypt token server-side, refresh if needed,
+      │                                   call TikTok Display API v2
+      │◀────────────────────────────────  JSON metrics (never tokens)
+
+/tiktokdisconnect
+      │  POST /api/tiktok/disconnect                (Bearer auth)
+      └────────────────────────────────▶  revoke + delete credentials & sessions
+```
+
+### Why the split?
+
+- `cryptography` cannot reliably load in the Termux Python 3.14 ARM64
+  environment. Moving all encryption to Render means the bot needs **zero**
+  native crypto dependencies.
+- The Discord bot needs no inbound port or public URL for OAuth.
+- There is exactly **one** OAuth callback server, and it is the Render backend.
+
+---
+
+## Termux & Python 3.14 Compatibility
+
+- **No `cryptography` required on Termux** for TikTok. `/tiktokconnect` works
+  even when the `cryptography` package is missing or fails to load.
+- **Zero Native Chart Dependencies**: historical growth charts (`/tiktokhistory`)
+  use a pure Python standard library PNG encoder (`struct`, `zlib`, `io`).
+- **No local OAuth callback server** runs inside the bot.
+- **No Insecure Plaintext Storage**: TikTok tokens are never stored on Termux;
+  they are encrypted at rest on Render.
+- All non-TikTok commands (`/populargames`, `/scan`, moderation, info, utility)
+  remain fully operational regardless of the crypto situation.
+
+---
+
 ## Commands Summary
 
 | Command | Category | Description |
 | --- | --- | --- |
 | `/populargames` | Roblox | Top 20 Roblox games by active players (with optional live tracker) |
 | `/scan` | AI Scanner | Scans configured codebase directory for security issues with Gemini |
-| `/tiktokconnect` | TikTok Analytics | Secure official OAuth connection link for TikTok |
+| `/tiktokconnect` | TikTok Analytics | Opens the Render-hosted official TikTok OAuth flow |
 | `/tiktokstats` | TikTok Analytics | View metrics and engagement rates for your latest TikTok video |
 | `/tiktoklive` | TikTok Analytics | Persistent live-updating analytics message in current channel |
 | `/tiktokhistory` | TikTok Analytics | Performance history list and pure Python generated growth chart PNG |
@@ -31,103 +92,180 @@ All features run natively in Python 3.10+, including Termux on Android ARM64 (Py
 
 ---
 
-## Termux & Python 3.14 Compatibility
+## Security Guarantees
 
-Xolby is engineered to start reliably on all environments, including Termux Android ARM64:
-- **Zero Native Chart Dependencies**: Historical growth charts (`/tiktokhistory`) use a pure Python standard library PNG encoder (`struct`, `zlib`, `io`) with zero C/C++ compilation requirements.
-- **Graceful Security Backend Handling**: If the native `cryptography` module is unavailable or fails to load on Termux, Xolby starts up normally without crashing. All core commands (`/populargames`, `/scan`, moderation, info, utility) remain 100% operational.
-- **No Insecure Plaintext Storage**: If secure encryption is unavailable, TikTok account connection is safely disabled rather than storing unencrypted tokens in SQLite.
-- **Termux Cryptography Note**: To enable TikTok token storage on Termux ARM64, install native cryptography via `pkg install python-cryptography` or `pkg install tur-repo && pkg install python-cryptography`.
-
----
-
-## TikTok Analytics Architecture
-
-```text
-User → /tiktokconnect → Official TikTok OAuth → Redirect Web Callback Server
-                                                       ↓
-                                            Tokens Encrypted at Rest
-                                                       ↓
-TikTok Display API v2 ← Centralized Analytics Cache ← TikTokLiveManager Async Loop
-                                                       ↓
-                                  Database Snapshots & Pure Python Growth Chart PNG
-                                                       ↓
-                                          Persistent Discord Live Message
-```
-
-### Official API Scopes & Metrics
-Uses TikTok's official Display API v2:
-- **Scopes**: `user.info.basic`, `video.list`
-- **Supported API Metrics**: Views, Likes, Comments, Shares, Favorites (where available), Title, Cover Thumbnail, Posted Time, Video URL.
-- **Calculated Derived Metrics**:
-  - Like Rate: `(likes / views) * 100`
-  - Comment Rate: `(comments / views) * 100`
-  - Share Rate: `(shares / views) * 100`
-  - Total Engagement Rate: `((likes + comments + shares + favorites) / views) * 100`
-- **TikTok Studio-only Metrics**: Advanced metrics such as watch time, retention, and play time are strictly noted as TikTok Studio-only and not fabricated.
-
-### Security Guarantees
-- **No Password Storage**: Never asks for or stores TikTok passwords.
-- **Token Encryption**: Access and refresh tokens are encrypted at rest using Fernet encryption (`cryptography`). Plaintext tokens are NEVER stored.
-- **No Token Logging**: Tokens and client secrets are never printed in logs, embeds, or exception messages.
+- **No Password Storage**: never asks for or stores TikTok passwords.
+- **No Plaintext Tokens**: access/refresh tokens are encrypted (Fernet) before
+  being persisted, and only on the Render server.
+- **Client Secret Isolation**: `TIKTOK_CLIENT_SECRET` lives only on Render. It is
+  never shipped to Termux, Discord, the browser, or any URL.
+- **Single-Use OAuth State**: cryptographically random, bound to the Discord user
+  id, stored server-side, expires after 10 minutes, and consumed atomically.
+- **Authenticated Bot API**: the bot authenticates with `XOLBY_WEB_API_KEY`
+  (`Authorization: Bearer …`); the backend rejects unauthenticated requests and
+  never exposes arbitrary Discord-user lookups.
+- **No Token Logging**: tokens, refresh tokens, client secrets, encryption keys,
+  authorization codes and API keys are never logged.
+- **Official APIs Only**: TikTok Display API v2 via official OAuth. No TikTok
+  Studio scraping and no private endpoints.
+- **Unavailable metrics are labelled, not invented**: Studio-only metrics
+  (watch time, retention) are shown as unavailable.
 
 ---
 
-## Installation & Setup
+## Installation & Setup (Local Development)
 
-### 1. Install Dependencies
+### 1. Install dependencies
+
+For the Discord bot (Termux/Linux/macOS/Windows):
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-### 2. Configure Environment Variables
+For the web backend that needs PostgreSQL (Render):
 
-Copy `.env.example` to `.env`:
+```bash
+python -m pip install -r requirements-render.txt
+```
+
+### 2. Configure environment variables
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your credentials:
+Edit `.env`. See the variable tables below.
 
-```env
-DISCORD_TOKEN=your_discord_bot_token
-
-# System Code Scanner
-GEMINI_API_KEY=your_gemini_api_key
-SCAN_DIRECTORY=/path/to/project
-
-# TikTok Analytics
-TIKTOK_CLIENT_KEY=your_tiktok_app_client_key
-TIKTOK_CLIENT_SECRET=your_tiktok_app_client_secret
-TIKTOK_REDIRECT_URI=http://localhost:8080/tiktok/callback
-TIKTOK_TOKEN_ENCRYPTION_KEY=a_secure_random_secret_string
-TIKTOK_CALLBACK_HOST=0.0.0.0
-TIKTOK_CALLBACK_PORT=8080
-TIKTOK_LIVE_INTERVAL_SECONDS=300
-```
-
-### 3. Run the Bot
+### 3. Run the Discord bot
 
 ```bash
 python bot.py
 ```
 
+### 4. Run the web backend (Render-compatible)
+
+```bash
+uvicorn web.app:app --host 0.0.0.0 --port $PORT
+```
+
+`/health` returns `{"status": "ok"}`. The FastAPI app starts independently of
+the Discord bot.
+
 ---
 
-## Configuration Reference
+## Render Deployment
 
-| Variable | Required | Default | Description |
-| --- | --- | --- | --- |
-| `DISCORD_TOKEN` | Yes | — | Discord Bot Token |
-| `GEMINI_API_KEY` | For `/scan` | — | Google Gemini API Key |
-| `SCAN_DIRECTORY` | For `/scan` | — | Path to source code directory |
-| `REPORT_CHANNEL_ID` | For `/scan` | — | Discord channel ID for scan reports |
-| `TIKTOK_CLIENT_KEY` | For TikTok | — | TikTok App Client Key |
-| `TIKTOK_CLIENT_SECRET` | For TikTok | — | TikTok App Client Secret |
-| `TIKTOK_REDIRECT_URI` | For TikTok | `http://localhost:8080/tiktok/callback` | OAuth Redirect URI configured in TikTok Developer Portal |
-| `TIKTOK_TOKEN_ENCRYPTION_KEY` | Recommended | — | Server secret key for encrypting tokens at rest |
-| `TIKTOK_CALLBACK_HOST` | No | `0.0.0.0` | OAuth callback server host |
-| `TIKTOK_CALLBACK_PORT` | No | `8080` | OAuth callback server port |
-| `TIKTOK_LIVE_INTERVAL_SECONDS` | No | `300` | Background update interval for live TikTok embeds (seconds) |
+1. Create a **Web Service** from this repository.
+2. Build command: `pip install -r requirements-render.txt`
+3. Start command: `uvicorn web.app:app --host 0.0.0.0 --port $PORT`
+4. Health check path: `/health`
+5. Add a managed **PostgreSQL** database (Render Postgres, Neon, etc.) and copy
+   its connection string into the `DATABASE_URL` environment variable.
+6. Set the server-side environment variables below in the Render dashboard.
+
+### Required Render environment variables
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `TIKTOK_CLIENT_KEY` | Yes | TikTok app client key (developer portal) |
+| `TIKTOK_CLIENT_SECRET` | Yes | TikTok app client secret (server-only) |
+| `TIKTOK_REDIRECT_URI` | Yes | `https://xolby.onrender.com/oauth/tiktok/callback` |
+| `TIKTOK_TOKEN_ENCRYPTION_KEY` | Yes | Long random secret used to derive the Fernet key |
+| `DATABASE_URL` | Yes | PostgreSQL URL for OAuth sessions and encrypted credentials |
+| `XOLBY_WEB_API_KEY` | Yes | Shared bearer secret used by the Discord bot |
+| `WEB_BASE_URL` | No | `https://xolby.onrender.com` |
+| `XOLBY_CONTACT_EMAIL` | No | Contact address shown on legal pages |
+
+### TikTok Developer Portal
+
+Set the OAuth **Redirect URI** to:
+
+```text
+https://xolby.onrender.com/oauth/tiktok/callback
+```
+
+Requested scopes: `user.info.basic`, `video.list`.
+
+---
+
+## Termux (Discord Bot) Environment Variables
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `DISCORD_TOKEN` | Yes | Discord bot token |
+| `XOLBY_WEB_BASE_URL` | Yes | Render backend base URL, e.g. `https://xolby.onrender.com` |
+| `XOLBY_WEB_API_KEY` | Yes | Shared internal API key (must match Render) |
+| `GEMINI_API_KEY` | For `/scan` | Google Gemini API key |
+| `SCAN_DIRECTORY` | For `/scan` | Path to source directory to scan |
+| `REPORT_CHANNEL_ID` | For `/scan` | Discord channel ID for scan reports |
+| `ROBLOX_DISCOVERY_URL` | No | Optional custom Roblox discovery source |
+| `TIKTOK_LIVE_INTERVAL_SECONDS` | No | Live TikTok embed refresh interval (default `300`) |
+
+> The bot must **not** be given `TIKTOK_CLIENT_SECRET`, `TIKTOK_CLIENT_KEY`,
+> `TIKTOK_TOKEN_ENCRYPTION_KEY`, or `DATABASE_URL`. Those are Render-only.
+
+---
+
+## Database Requirements
+
+- **Render backend** persists OAuth sessions and encrypted TikTok credentials
+  through `DATABASE_URL`:
+  - `postgresql://…` / `postgres://…` → PostgreSQL (recommended production)
+  - `sqlite:///path` or a plain path → SQLite (local development only)
+- Render's filesystem is **ephemeral**, so production must use PostgreSQL;
+  SQLite on Render would lose OAuth sessions and credentials on redeploy.
+- **Termux bot** keeps its own local `bot_data.db` SQLite for non-sensitive data
+  (warnings, reminders, Roblox trackers, TikTok snapshot history). It never
+  stores TikTok tokens.
+
+Backend schema (created automatically):
+
+- `tiktok_oauth_sessions(state, discord_user_id, created_at, expires_at, consumed, completed_at)`
+- `tiktok_credentials(discord_user_id, tiktok_open_id, display_name, access_token, refresh_token, expires_at, refresh_expires_at, created_at, updated_at)`
+
+---
+
+## Official API Scopes & Metrics
+
+Uses TikTok's official Display API v2:
+
+- **Scopes**: `user.info.basic`, `video.list`
+- **Supported API Metrics**: Views, Likes, Comments, Shares, Favorites (where
+  available), Title, Cover Thumbnail, Posted Time, Video URL.
+- **Calculated Derived Metrics**:
+  - Like Rate: `(likes / views) * 100`
+  - Comment Rate: `(comments / views) * 100`
+  - Share Rate: `(shares / views) * 100`
+  - Total Engagement Rate: `((likes + comments + shares + favorites) / views) * 100`
+- **TikTok Studio-only Metrics**: watch time, retention, and play time are
+  explicitly labelled as unavailable and never fabricated.
+
+---
+
+## API Reference (internal bot ⇄ backend)
+
+All endpoints require `Authorization: Bearer <XOLBY_WEB_API_KEY>`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/tiktok/oauth/start` | Create a single-use OAuth session, return the authorization URL |
+| `GET` | `/api/tiktok/account/{discord_user_id}` | Connected account metadata (no tokens) |
+| `GET` | `/api/tiktok/videos/{discord_user_id}` | Recent video metrics (no tokens) |
+| `POST` | `/api/tiktok/disconnect` | Revoke tokens and delete stored credentials/sessions |
+| `GET` | `/oauth/tiktok/callback` | Public TikTok redirect handler (validates state, exchanges code) |
+| `GET` | `/health` | Liveness probe → `{"status": "ok"}` |
+
+---
+
+## Testing
+
+```bash
+python -m compileall -q .
+python -m unittest discover -s tests
+```
+
+Tests cover OAuth session creation, single-use/expiry/invalid-state handling,
+encrypted-only storage, that tokens are never returned to the bot, that
+`/tiktokconnect` works without `cryptography`, that the bot starts no local OAuth
+server, that command cogs load, and that `/health` works.

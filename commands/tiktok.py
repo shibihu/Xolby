@@ -1,4 +1,10 @@
-"""TikTok Analytics command cog for Xolby."""
+"""TikTok Analytics command cog for Xolby.
+
+All TikTok OAuth, state, token exchange, token encryption and credential
+storage happen on the Render web backend. This cog (running on Termux) only
+talks to the authenticated internal API exposed by ``services.web_backend`` and
+never imports ``cryptography`` for TikTok secure storage.
+"""
 
 from __future__ import annotations
 
@@ -9,20 +15,25 @@ from discord import app_commands
 from discord.ext import commands
 
 from services.db import db
-from services.tiktok import (
-    TikTokAPIClient,
-    TikTokSecurityError,
-    decrypt_token,
-    is_encryption_available,
-)
 from services.tiktok_analytics import (
     build_tiktok_stats_embed,
     generate_history_chart,
     tiktok_cache,
 )
-from services.tiktok_oauth import build_authorization_url, create_oauth_state
+from services.web_backend import (
+    WebBackendAuthError,
+    WebBackendError,
+    WebBackendUnavailable,
+    web_backend,
+)
 
 log = logging.getLogger(__name__)
+
+#: User-facing message when the Render backend is not configured/reachable.
+_BACKEND_UNAVAILABLE_MSG = (
+    "⚠️ **TikTok backend unavailable**\n"
+    "The Xolby web backend could not be reached. Please try again in a moment."
+)
 
 
 class TikTokCog(commands.Cog):
@@ -39,24 +50,62 @@ class TikTokCog(commands.Cog):
         description="Connect your TikTok account securely using official OAuth.",
     )
     async def tiktokconnect(self, interaction: discord.Interaction) -> None:
-        """Initiate official TikTok OAuth account connection flow."""
-        if not is_encryption_available():
+        """Initiate the official TikTok OAuth flow hosted on the Render backend.
+
+        No encryption capability is required on Termux: the bot only asks the
+        backend to create a short-lived, single-use OAuth session bound to the
+        Discord user id, then shows the returned authorization URL.
+        """
+        if not web_backend.is_configured():
             await interaction.response.send_message(
-                "⚠️ **TikTok Secure Storage Unavailable**\n"
-                "Secure token encryption (`cryptography`) is unavailable in this environment.\n"
-                "TikTok account connection is disabled to prevent storing unencrypted credentials.",
+                "⚠️ **TikTok connection is not configured**\n"
+                "The Xolby web backend URL/API key is missing on this bot. "
+                "Ask the bot operator to set `XOLBY_WEB_BASE_URL` and `XOLBY_WEB_API_KEY`.",
                 ephemeral=True,
             )
             return
 
-        existing_acc = db.get_tiktok_account(interaction.user.id)
-        if existing_acc and existing_acc.display_name:
-            prompt_msg = f" You are currently connected as **@{existing_acc.display_name}**. Authorizing again will update your connection."
-        else:
-            prompt_msg = ""
+        await interaction.response.defer(ephemeral=True, thinking=True)
 
-        state = create_oauth_state(interaction.user.id)
-        auth_url = build_authorization_url(state)
+        prompt_msg = ""
+        try:
+            account = await web_backend.get_account(interaction.user.id)
+            if account and account.display_name:
+                prompt_msg = (
+                    f" You are currently connected as **@{account.display_name}**. "
+                    "Authorizing again will update your connection."
+                )
+        except WebBackendError:
+            # Non-fatal: the connection flow can still proceed.
+            pass
+
+        try:
+            session = await web_backend.start_tiktok_oauth(interaction.user.id)
+        except WebBackendAuthError:
+            log.error("TikTok OAuth start rejected: backend API key invalid.")
+            await interaction.followup.send(
+                "⚠️ **TikTok backend authentication failed**\n"
+                "This is a bot configuration issue. Please contact the bot operator.",
+                ephemeral=True,
+            )
+            return
+        except WebBackendUnavailable:
+            log.warning("TikTok OAuth start failed: web backend unavailable.")
+            await interaction.followup.send(_BACKEND_UNAVAILABLE_MSG, ephemeral=True)
+            return
+        except WebBackendError:
+            log.warning("TikTok OAuth start failed: backend returned an error.")
+            await interaction.followup.send(_BACKEND_UNAVAILABLE_MSG, ephemeral=True)
+            return
+
+        auth_url = session.get("authorization_url")
+        if not auth_url:
+            log.error("TikTok OAuth start response did not include an authorization URL.")
+            await interaction.followup.send(
+                "❌ Could not start the TikTok connection flow. Please try again later.",
+                ephemeral=True,
+            )
+            return
 
         embed = discord.Embed(
             title="🔗 Connect Your TikTok Account",
@@ -65,7 +114,7 @@ class TikTokCog(commands.Cog):
                 "🔒 **Security & Privacy Guarantee:**\n"
                 "• Official TikTok OAuth flow (no password stored)\n"
                 "• Read-only access to user profile and video list\n"
-                "• Access tokens encrypted at rest\n"
+                "• Access tokens encrypted at rest on the Xolby server\n"
                 "• Authorization link expires in **10 minutes**"
             ),
             color=0xFE2C55,
@@ -81,7 +130,7 @@ class TikTokCog(commands.Cog):
             )
         )
 
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     # ---------------------------------------------------------------------------
     # /tiktokstats
@@ -92,14 +141,6 @@ class TikTokCog(commands.Cog):
     )
     async def tiktokstats(self, interaction: discord.Interaction) -> None:
         """Retrieve recent TikTok video metrics and render analytics embed."""
-        if not is_encryption_available():
-            await interaction.response.send_message(
-                "⚠️ **TikTok Secure Storage Unavailable**\n"
-                "Secure token encryption is unavailable in this environment.",
-                ephemeral=True,
-            )
-            return
-
         await interaction.response.defer()
 
         analytics = await tiktok_cache.get_user_analytics(interaction.user.id)
@@ -127,6 +168,8 @@ class TikTokCog(commands.Cog):
             msg = "❌ No videos found on your connected TikTok account."
             if status == "offline_cached":
                 msg = "🟡 Data temporarily unavailable. Please try again shortly."
+            elif status == "error":
+                msg = "⚠️ Could not reach the TikTok backend. Please try again shortly."
             await interaction.followup.send(msg, ephemeral=True)
             return
 
@@ -154,14 +197,6 @@ class TikTokCog(commands.Cog):
     )
     async def tiktoklive(self, interaction: discord.Interaction) -> None:
         """Start or update a live tracking message in current channel."""
-        if not is_encryption_available():
-            await interaction.response.send_message(
-                "⚠️ **TikTok Secure Storage Unavailable**\n"
-                "Secure token encryption is unavailable in this environment.",
-                ephemeral=True,
-            )
-            return
-
         await interaction.response.defer()
 
         analytics = await tiktok_cache.get_user_analytics(interaction.user.id)
@@ -226,8 +261,18 @@ class TikTokCog(commands.Cog):
         """Display historical snapshots and attach performance chart."""
         await interaction.response.defer()
 
-        account = db.get_tiktok_account(interaction.user.id)
-        if not account:
+        # Connection metadata comes from the backend; snapshot history is stored
+        # locally on the bot for chart rendering.
+        account_info: Optional[Any] = None
+        if web_backend.is_configured():
+            try:
+                account_info = await web_backend.get_account(interaction.user.id)
+            except WebBackendError:
+                account_info = None
+
+        snapshots = db.get_tiktok_snapshots(interaction.user.id, limit=30)
+
+        if account_info is None and not snapshots:
             await interaction.followup.send(
                 "❌ You do not have a connected TikTok account.\n"
                 "Run `/tiktokconnect` to link your TikTok account.",
@@ -235,7 +280,6 @@ class TikTokCog(commands.Cog):
             )
             return
 
-        snapshots = db.get_tiktok_snapshots(interaction.user.id, limit=30)
         if not snapshots:
             await interaction.followup.send(
                 "ℹ️ No historical snapshots recorded yet.\n"
@@ -244,7 +288,7 @@ class TikTokCog(commands.Cog):
             )
             return
 
-        display_name = account.display_name or "TikTok User"
+        display_name = (account_info.display_name if account_info else "") or "TikTok User"
         embed = discord.Embed(
             title=f"📊 TikTok History — @{display_name}",
             description=f"Recorded **{len(snapshots)}** performance snapshot(s) across recent videos.",
@@ -289,38 +333,60 @@ class TikTokCog(commands.Cog):
         description="Disconnect your TikTok account and revoke stored OAuth tokens.",
     )
     async def tiktokdisconnect(self, interaction: discord.Interaction) -> None:
-        """Disconnect TikTok account and purge user authorization tokens."""
+        """Ask the backend to revoke tokens and delete stored credentials."""
         await interaction.response.defer(ephemeral=True)
 
-        account = db.get_tiktok_account(interaction.user.id)
-        if not account:
+        # Purge any legacy local credentials/trackers from the bot database.
+        # (The bot no longer stores TikTok tokens, but old installs may have.)
+        db.delete_tiktok_account(interaction.user.id)
+
+        if not web_backend.is_configured():
+            await interaction.followup.send(
+                "⚠️ **TikTok backend not configured.**\n"
+                "Local tracking data was cleared, but the server-side connection "
+                "could not be revoked automatically.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            result = await web_backend.disconnect(interaction.user.id)
+        except WebBackendAuthError:
+            log.error("TikTok disconnect rejected: backend API key invalid.")
+            await interaction.followup.send(
+                "⚠️ **TikTok backend authentication failed.**\n"
+                "Please contact the bot operator.",
+                ephemeral=True,
+            )
+            return
+        except WebBackendError:
+            log.warning("TikTok disconnect failed: backend unavailable.")
+            await interaction.followup.send(
+                "⚠️ **Could not reach the TikTok backend.**\n"
+                "Your connection was not revoked. Please try again shortly.",
+                ephemeral=True,
+            )
+            return
+
+        connected = bool(result.get("disconnected"))
+        if not connected:
             await interaction.followup.send(
                 "❌ You do not have a connected TikTok account.", ephemeral=True
             )
             return
 
-        # Attempt to revoke token with official API if decryption is available
-        if is_encryption_available():
-            try:
-                decrypted_token = decrypt_token(account.access_token)
-                client = TikTokAPIClient()
-                try:
-                    await client.revoke_token(decrypted_token)
-                except Exception as exc:
-                    log.warning("Revoke token API call error during disconnect: %s", type(exc).__name__)
-                finally:
-                    await client.close()
-            except TikTokSecurityError:
-                pass
-
-        # Delete account and associated live trackers from database
-        db.delete_tiktok_account(interaction.user.id)
-
+        revoked = bool(result.get("revoked"))
+        revoke_line = (
+            "✅ Your TikTok authorization has been revoked."
+            if revoked
+            else "ℹ️ The stored credentials were deleted (TikTok revocation was not confirmed)."
+        )
         embed = discord.Embed(
             title="🔌 TikTok Account Disconnected",
             description=(
                 "✅ Your TikTok account connection has been removed.\n"
-                "All stored OAuth tokens have been permanently deleted and revoked."
+                f"{revoke_line}\n"
+                "All server-side OAuth tokens have been permanently deleted."
             ),
             color=0x2ECC71,
         )

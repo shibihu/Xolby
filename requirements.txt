@@ -1,7 +1,15 @@
+# --- Shared (Discord bot on Termux + Render web backend) ---
 discord.py>=2.6,<3
 aiohttp>=3.10,<4
 python-dotenv>=1.0,<2
+
+# --- Web backend deps (Render) ---
+# The bot does not import these for TikTok: OAuth/token encryption run on
+# Render only. FastAPI is only needed by the web service.
 cryptography>=42.0,<51
 fastapi
 jinja2
 uvicorn
+
+# For production PostgreSQL persistence on Render, install the extra driver:
+#   pip install -r requirements-render.txt
