@@ -13,3 +13,5 @@ uvicorn
 
 # For production PostgreSQL persistence on Render, install the extra driver:
 #   pip install -r requirements-render.txt
+
+psycopg[binary]
